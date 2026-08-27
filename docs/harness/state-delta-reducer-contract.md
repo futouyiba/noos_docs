@@ -3,7 +3,7 @@
 > **状态**：Design Baseline v0.1  
 > **日期**：2026-08-27  
 > **上位文档**：[Runtime Object Model & Authority Model v0](runtime-object-authority-model.md)  
-> **目标**：定义 durable immutable Proposal 如何经过 durable Authorization，在一致事务边界内安全、可追溯、可并发检测地变成 Run State 变更。
+> **目标**：定义 durable immutable Proposal 如何经过 durable Authorization，在一致事务边界内安全、可追溯、可并发检测且可幂等恢复地变成 Run State 变更。
 
 ---
 
@@ -29,18 +29,19 @@ Durable AuthorizationResult
              ↓
            Reducer
              ↓
-        State vN+1
-             +
-         ApplyResult
-             +
-         Audit Record
+  crash-consistent local commit
+       ├─ State vN+1
+       ├─ ApplyResult
+       └─ Transition / Audit Record
 ```
 
 核心原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-本文只解决“状态怎么安全变化”。它不决定下一步是否 Continue / Refresh / Rollover，也不负责 Provider dispatch / crash recovery。
+本文只解决“状态怎么安全变化”。它不决定下一步是否 Continue / Refresh / Rollover，也不负责 Provider dispatch / browser crash recovery。
+
+但 **NOOS 自己的 State Apply 是否已经成功提交** 属于本文职责，而不是后续 Execution Journal 的 Provider-side recovery 职责。
 
 ---
 
@@ -131,6 +132,7 @@ Reducer 处理 Authorized Delta 后返回并持久化：
 apply_result:
   id: AP-000087
   delta_id: SD-000087
+  delta_fingerprint: sha256:...
   outcome: applied
   from_version: 17
   to_version: 18
@@ -149,6 +151,8 @@ no_op
 ```
 
 ApplyResult 不创建 Human Gate。
+
+对已经成功应用过的同一 `delta_id + fingerprint` 重试，Reducer/State Store **返回原 ApplyResult**，不重新执行事务，也不将其误判为 `rejected_stale`。
 
 ---
 
@@ -357,7 +361,7 @@ review_snapshot_id:
 base_state_version:
 ```
 
-Stale Review 由 Policy / Orchestrator 处理，不由 Reducer猜测 rebase。
+Stale Review 由 Policy / Orchestrator 处理，不由 Reducer 猜测 rebase。
 
 ---
 
@@ -459,12 +463,25 @@ Authorized Delta with matching proposal_operations_fingerprint
 
 Proposal / Authorized Delta 都携带 `base_state_version`。
 
+正常首次 apply 时：
+
 ```text
 current_state.version != base_state_version
 → rejected_stale
 ```
 
-v0 不允许 Reducer 自动 merge stale delta。
+但在判定 stale **之前**，State Store 必须先用 `delta_id` 查询是否已经存在该 Delta 的成功 Transition Record：
+
+```text
+same delta_id + same fingerprint + successful transition exists
+→ return original ApplyResult
+```
+
+所以：
+
+> **`rejected_stale` 只表示真正的 optimistic-concurrency 冲突，不表示“这笔 Delta 其实已成功，但上次调用方没拿到 receipt”。**
+
+v0 不允许 Reducer 自动 merge 真正 stale 的 delta。
 
 ---
 
@@ -522,14 +539,105 @@ tentative_state
       ↓ OP3
       ↓ all valid?
       ├─ no → discard draft
-      └─ yes → atomic commit as v18
+      └─ yes → prepare durable transaction
 ```
 
 v0 不支持引用尚未执行的未来 operation 结果；调用方必须按依赖顺序排列 operations。
 
 ---
 
-# 15. Reducer Invariants v0
+# 15. Local Apply Crash Consistency 与 Delta Idempotency
+
+这是 State Store 自己的 transaction contract，不属于 Provider Execution Journal。
+
+## 15.1 Successful Apply 必须原子持久化三类结果
+
+成功 apply 时，以下内容必须在**同一个 durable local transaction** 中提交：
+
+```text
+State mutation / new state version
++
+ApplyResult
++
+Transition / Audit Record keyed by delta_id
+```
+
+概念上：
+
+```text
+BEGIN LOCAL TRANSACTION
+
+verify delta_id / fingerprint
+verify current version = base_state_version
+verify preconditions / invariants
+apply staged mutation
+write State v18
+write ApplyResult AP-087
+write Transition/Audit Record(delta_id = SD-087)
+
+COMMIT
+```
+
+不能允许：
+
+```text
+State v18 durable
+↓ crash
+ApplyResult / Transition Record missing
+```
+
+否则重启后无法区分“同一 Delta 已经成功”与“另一笔事务推进了 State”。
+
+## 15.2 `delta_id` 是 apply 幂等键
+
+v0 冻结：
+
+```text
+same delta_id + same delta/proposal fingerprint
+→ same logical apply
+```
+
+如果该 `delta_id` 已有成功 Transition Record：
+
+```text
+→ do not execute again
+→ return the original persisted ApplyResult
+```
+
+从调用者角度，这是幂等重放，而不是新的 state transition。
+
+## 15.3 ID reuse / tampering
+
+```text
+same delta_id + different fingerprint
+→ rejected_invariant
+```
+
+`delta_id` 不允许被复用来承载另一笔内容不同的事务。
+
+## 15.4 No-op 也要有 receipt
+
+如果整笔 Authorized Delta 最终是 `no_op`，它虽然不 bump State version，但仍应 durable 记录 ApplyResult / Transition Record，保证同一 delta 重试仍返回同一个 `no_op` receipt，而不是重复进入业务判断。
+
+## 15.5 与 Execution Journal 的边界
+
+这里回答：
+
+```text
+NOOS local State Delta 到底 commit 了吗？
+```
+
+后续 Execution Journal 回答：
+
+```text
+prompt/browser/provider side effect 到底发生了吗？
+```
+
+两者都是幂等性问题，但 authority domain 不同，不能混为一个 journal。
+
+---
+
+# 16. Reducer Invariants v0
 
 1. Committed Decision / Constraint / Rejection 不允许静默删除。
 2. Rejected 必须通过显式 reopen path 才能复活。
@@ -540,29 +648,46 @@ v0 不支持引用尚未执行的未来 operation 结果；调用方必须按依
 7. Reducer 只 attach SourceRef/EvidenceRef ID，不创建或修改 observation identity。
 8. 至少一项实际 mutation 成功才 bump state version。
 9. Authorized Delta 的 operations fingerprint 必须与原 immutable Proposal 匹配。
+10. **State mutation、ApplyResult、Transition/Audit Record 必须 crash-consistent atomic commit。**
+11. **`delta_id` 是 apply 幂等键；同 ID 同 fingerprint 重试返回原 ApplyResult。**
+12. **同一 `delta_id` 若 fingerprint 不同，属于 invariant violation。**
 
 ---
 
-# 16. Reducer 不应该做什么
+# 17. Reducer 不应该做什么
 
 Reducer 不做：LLM 语义判断、事实搜索、Authority/Human Gate、Evidence Store 写入、reviewer adjudication、stale auto-rebase、external side effect、next action。
 
-Reducer 应尽量接近可单元测试的 pure-ish function。
+Reducer 应尽量接近可单元测试的 pure-ish function；其 State Store adapter 负责 durable transaction / idempotent receipt。
 
 ---
 
-# 17. Conflict / Stale / No-op
+# 18. Conflict / Stale / No-op
+
+判定顺序必须避免把 successful replay 误报为 stale：
 
 ```text
-stale → rejected_stale
-precondition failure → rejected_precondition
-invariant failure → rejected_invariant
+1. delta_id 已成功应用？
+   yes + fingerprint match → return original ApplyResult
+   yes + fingerprint mismatch → rejected_invariant
+
+2. current version != base_state_version
+   → rejected_stale
+
+3. precondition failure
+   → rejected_precondition
+
+4. invariant failure
+   → rejected_invariant
 ```
+
+No-op：
 
 ```text
 所有 operation no-op
 → outcome = no_op
 → version unchanged
+→ persist no_op ApplyResult / Transition Record
 ```
 
 ```text
@@ -574,7 +699,7 @@ invariant failure → rejected_invariant
 
 ---
 
-# 18. AuthorizationResult 与 ApplyResult 边界
+# 19. AuthorizationResult 与 ApplyResult 边界
 
 ## Policy owns
 
@@ -585,7 +710,7 @@ denied
 PendingHumanGate creation
 ```
 
-## Reducer owns
+## Reducer / State Store owns
 
 ```text
 applied
@@ -593,17 +718,20 @@ no_op
 rejected_stale
 rejected_precondition
 rejected_invariant
+idempotent replay of prior ApplyResult
 ```
 
 ---
 
-# 19. Review / stale Proposal
+# 20. Review / stale Proposal
 
-Reviewer Proposal 必须携带 `review_snapshot_id` / `base_state_version`。State 已推进时，Reducer `rejected_stale`；后续是否重做 Review 由 Orchestrator / Policy 决定。
+Reviewer Proposal 必须携带 `review_snapshot_id` / `base_state_version`。
+
+Reducer/State Store 先检查同 `delta_id` 是否已经成功提交；若不是 replay 且 State 已推进，才返回 `rejected_stale`。后续是否重做 Review 由 Orchestrator / Policy 决定。
 
 ---
 
-# 20. Compaction Worker 的输出
+# 21. Compaction Worker 的输出
 
 ```text
 Transcript Segment
@@ -621,13 +749,13 @@ Reducer
 
 ---
 
-# 21. Context Compiler 只消费 Applied State
+# 22. Context Compiler 只消费 Applied State
 
 Pending Proposal / PendingHumanGate 可以显式展示，但不能伪装成 Committed State。
 
 ---
 
-# 22. State Delta v0 最小实现范围
+# 23. State Delta v0 最小实现范围
 
 ```text
 add_hypothesis
@@ -649,7 +777,7 @@ Source observation 创建/supersession 属于 Hub Evidence / Source Store。
 
 ---
 
-# 23. 必须测试的场景
+# 24. 必须测试的场景
 
 ### A. Working mutation
 
@@ -686,7 +814,7 @@ F1 != F2
 
 ### F. Stale reviewer
 
-base v17 / current v20 → rejected_stale。
+base v17 / current v20，且该 delta_id 未曾成功提交 → rejected_stale。
 
 ### G. Source re-observation
 
@@ -694,11 +822,34 @@ base v17 / current v20 → rejected_stale。
 
 ### H. Mixed / all no-op
 
-mixed mutation → applied + version+1；all no-op → no_op + version unchanged。
+mixed mutation → applied + version+1；all no-op → no_op + version unchanged，并持久化 no-op receipt。
+
+### I. Crash after local state commit boundary
+
+在 durable transaction 的任意中间位置 crash：重启后只能看到“整笔未提交”或“State + ApplyResult + Transition Record 全部已提交”，不能看到半笔成功。
+
+### J. Same Delta replay after lost caller receipt
+
+```text
+SD-087 已成功提交
+调用方未收到 AP-087 / process crash
+↓ retry SD-087
+same delta_id + same fingerprint
+→ return original AP-087
+→ State version 不再次变化
+```
+
+### K. Delta ID collision / tampering
+
+```text
+SD-087 already recorded with F1
+retry SD-087 with F2
+→ rejected_invariant
+```
 
 ---
 
-# 24. 当前冻结结论
+# 25. 当前冻结结论
 
 1. Proposal durable、immutable，本身就是 request。
 2. Operation 是 desired final state transition；无 `propose_*` Reducer operation。
@@ -714,10 +865,13 @@ mixed mutation → applied + version+1；all no-op → no_op + version unchanged
 12. stale Proposal 不自动 merge。
 13. 全部 no-op 不 bump version；mixed no-op + mutation 算 applied。
 14. Context Compiler 只把 Applied/Committed State 当正式工作状态。
+15. **Successful Apply 必须把 State mutation、ApplyResult、Transition/Audit Record 在同一 durable transaction 中提交。**
+16. **`delta_id` 是 local apply 幂等键；同 ID 同 fingerprint 重试返回原 ApplyResult。**
+17. **只有排除 successful replay 后，version mismatch 才能定义为 `rejected_stale`。**
 
 ---
 
-# 25. 与下一层 Continuation 的接口
+# 26. 与下一层 Continuation 的接口
 
 Continuation State Machine 只需要消费：
 
@@ -736,17 +890,20 @@ AuthorizationResult = requires_human
 → PAUSED_HUMAN
 
 AuthorizationResult = authorized
-ApplyResult = applied
+ApplyResult = applied / no_op / idempotent replay of prior success
 → DECIDE_NEXT_ACTION
 
 ApplyResult = rejected_stale
+→ 真正发生了并发/版本冲突
 → RECONCILE / REGENERATE
 ```
+
+Continuation 不需要自行猜测“State vN+1 到底是不是这笔 Delta 造成的”；State Store 必须先通过 `delta_id` 幂等 receipt 把这个问题回答清楚。
 
 ---
 
 ## 当前状态
 
-本文升为 **Design Baseline v0.1**。
+本文继续保持 **Design Baseline v0.1**。
 
-经过与 Runtime Object & Authority Model 的接口对审，Proposal durability/immutability、Authorization ownership、事务原子性、staged Reducer、Source/Evidence ownership、provenance 与 Human Gate 边界已经互相闭合。后续若实现/Eval 暴露问题，通过显式版本演进调整，而不是继续在进入 Continuation 前无限打磨。
+本轮补齐 local State Apply crash consistency：State mutation、ApplyResult 与 Transition/Audit Record 同事务提交，`delta_id` 作为 apply 幂等键。至此 Reducer / State Store 对外提供的 `rejected_stale` 已经具有单义语义，可以安全交给 Continuation 消费。
