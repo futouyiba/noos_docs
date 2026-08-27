@@ -13,6 +13,7 @@
 
 - [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md)
 - [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md)
+- [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md)
 
 ### Branding
 
@@ -37,11 +38,21 @@ Harness 当前最关键的控制原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
+语义上进一步区分：
+
+```text
+Canonical Source
+→ 决定外部事实的 epistemic authority
+
+Committed State
+→ 表示 Run 内已正式提交的约束、决策与 rejection
+```
+
 ## 当前底层 Contract 顺序
 
-1. **Runtime Object Model & Authority Model v0** — 已有 Candidate
-2. **State Delta + Reducer Contract v0** — 下一步
-3. **Continuation State Machine v0**
+1. **Runtime Object Model & Authority Model v0** — Design Candidate
+2. **State Delta + Reducer Contract v0** — Design Candidate
+3. **Continuation State Machine v0** — 下一步
 4. **Execution Journal & Recovery Contract v0**
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
