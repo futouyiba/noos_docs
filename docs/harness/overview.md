@@ -1,34 +1,28 @@
 # NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器
 
-> **状态**：Product Architecture Candidate v0.1  
+> **状态**：Design Baseline v0.2  
 > **日期**：2026-08-27  
 > **项目**：NOOS  
-> **候选中文名**：怒思（当前首选候选）  
-> **主题**：Browser Chatbot Harness / Session Continuity / Context Control / Multi-Conversation Review
+> **中文工作名**：怒思（候选）  
+> **主题**：Run Continuity / Context Control / State Authority / Browser Chatbot Harness
 
 ---
 
 ## 0. 一句话说明
 
-今天使用 ChatGPT、Claude 这类 Chatbot 做复杂设计时，真正限制工作的往往已经不是“模型不会回答”，而是：**工作无法被持续、稳定、可控地运行。**
+今天用 ChatGPT、Claude 这类 Chatbot 做复杂设计，真正限制工作的往往已经不是“模型不会回答”，而是：**工作无法被持续、稳定、可控地运行。**
 
-一个复杂设计专题可能需要连续推进几十轮；用户需要不断手工发送“继续”；对话越来越长以后网页开始卡顿；模型也会逐渐重复、漂移、忘记已关闭的问题；如果再开几个独立对话做领域审查、产品审查、实现审查，用户还要人工在这些对话之间搬运上下文和意见。
+一个复杂专题可能需要连续推进几十轮。用户需要不断手工发送“继续”；对话越来越长以后网页可能变卡；模型也可能开始重复、漂移、忘记已关闭的问题；如果再开几个独立对话做领域审查、产品审查、实现审查，用户还要人工搬运上下文和意见。
 
-NOOS Harness 要解决的不是“再造一个 ChatGPT”，而是把这些原本靠用户手工维持的工作，变成一个由 NOOS 管理的长期 Run：
+NOOS Harness 的目标不是再造一个 ChatGPT，而是把这些原本靠用户手工维持的过程，变成一个由 NOOS 管理的长期 Run：
 
-> **NOOS 持有任务状态和显式工作上下文；Chatbot 负责阶段性推理。Conversation 可以刷新、压缩、替换和分叉，而 Run 始终连续。**
+> **NOOS 持有工作的连续性、任务状态和显式工作上下文；Chatbot 负责阶段性推理。Provider Conversation 可以被替换，Browser Session 可以被刷新和销毁，而 Run 始终连续。**
 
 ---
 
-# 1. 我们真正遇到的问题是什么？
+# 1. 我们真正要解决的，不是“自动点继续”
 
-先看一个很普通、但很典型的复杂设计过程。
-
-用户提出一个问题：
-
-> “设计 World Condition → Fish Response 的产品因果模型。”
-
-第一轮回答通常不会直接达到稳定设计。真实过程更像这样：
+典型复杂设计流程更像这样：
 
 ```text
 提出问题
@@ -41,11 +35,7 @@ NOOS Harness 要解决的不是“再造一个 ChatGPT”，而是把这些原�
   ↓
 继续
   ↓
-审查概念 ownership
-  ↓
-继续
-  ↓
-发现 double-count
+审查 ownership / double-count
   ↓
 继续
   ↓
@@ -54,124 +44,66 @@ NOOS Harness 要解决的不是“再造一个 ChatGPT”，而是把这些原�
 ……
 ```
 
-这个过程持续二三十轮并不罕见。
+二三十轮并不罕见。
 
-问题在于，其中大量“继续”并不包含新的用户判断。用户真正提供价值的时刻，通常只是少数几个：
+其中大量“继续”并不包含新的用户判断。用户真正需要介入的时刻，通常只是少数几个：
 
-- 两个方案都合理，需要做产品选择；
-- 要改变讨论范围；
+- 两个方案都合理，需要产品选择；
+- 需要改变任务范围；
 - 要推翻已经确认的重要决定；
-- 要向正式文档、代码或外部系统执行不可逆写入。
+- 要执行外部写入或不可逆动作。
 
-剩下的大量工作，其实可以由一个 Harness 自动推进。
+因此，“自动 Continue”只是表层需求。真正的产品问题是：
 
-于是第一个需求出现了：
-
-> **不要让我守着 ChatGPT 点几十次“继续”。**
-
-但只做自动继续，很快又会暴露第二个问题。
+> **怎样让一项 AI 工作在用户不持续盯着页面的情况下，仍然能向前推进、保持状态、处理故障，并在真正需要人类权威时暂停。**
 
 ---
 
-# 2. 为什么“自动发送继续”远远不够？
-
-如果插件只是：
+# 2. 需求可以分成四层
 
 ```text
-回答结束
-→ 自动发送“继续”
-→ 回答结束
-→ 自动发送“继续”
+┌──────────────────────────────────────┐
+│ 4. Workflow Orchestration            │
+│ Multi-review / Fan-out / Human Gate  │
+├──────────────────────────────────────┤
+│ 3. Context Harness                   │
+│ State / Compaction / Projection      │
+├──────────────────────────────────────┤
+│ 2. Session Continuity Runtime        │
+│ Continue / Refresh / Rollover        │
+├──────────────────────────────────────┤
+│ 1. Provider & Browser Adapter        │
+│ ChatGPT / Claude / browser surface   │
+└──────────────────────────────────────┘
 ```
 
-它最多是一个自动点击器。
-
-而真正长期运行以后，会出现至少四类问题。
-
-## 2.1 页面越来越卡
-
-长时间 streaming、大量 DOM、代码块、附件、React 状态以及插件自身 observer 都可能让 ChatGPT 页面越来越重。
-
-有时刷新网页就能恢复相当一部分性能。
-
-所以需要：
-
-> **Safe Refresh：在确认当前回答已经结束、用户没有未提交输入、Run 状态已经持久化后，自动刷新并恢复。**
-
-## 2.2 Conversation 本身越来越长
-
-即使网页刷新以后恢复流畅，一个拥有上百条消息的 conversation 本身仍然越来越重。
-
-更重要的是，问题不仅是性能。
-
-长对话还会出现：
-
-- 旧假设与新结论混在一起；
-- 已经 rejected 的方案重新出现；
-- 已关闭的问题被重新打开；
-- 术语慢慢漂移；
-- 模型花越来越多精力理解历史，而不是解决当前问题。
-
-这可以称为 **Context Rot**。
-
-因此需要：
-
-> **Conversation Rollover：把当前工作状态压缩成受控上下文，开启一个新的 Chatbot conversation，并继续同一个逻辑任务。**
-
-## 2.3 多个审查对话开始失控
-
-复杂设计往往不能只靠主线程自我审查。
-
-例如可能需要：
+旁边还有一个独立平面：
 
 ```text
-Main Design
-├─ Domain Reviewer
-├─ Product / Strategy Reviewer
-├─ Architecture Reviewer
-└─ Production Reality Reviewer
+Vault / Wiki / Notion / Git / Files / Reference
 ```
 
-今天这些对话之间的上下文搬运、review 结果回收、冲突整理、修改主方案，几乎全部靠人手完成。
+它们是 Context Source，不是 Runtime 本身。
 
-因此需要：
-
-> **Multi-Conversation Orchestration：让不同 conversation 扮演不同正交角色，并由 Harness 负责分发、回收与裁决流程。**
-
-## 2.4 ChatGPT 的上下文并不真正属于用户
-
-在网页 ChatGPT 中，用户无法准确控制或观察服务端究竟怎样管理：
-
-- system context；
-- memory；
-- project instructions；
-- 历史消息截断；
-- 内部 summary；
-- tool state。
-
-因此 NOOS 不应该承诺“完全控制 ChatGPT 的 context window”。
-
-但它可以做到一个更现实、也已经非常有价值的事情：
-
-> **把任务真正依赖的 authoritative explicit context 放在 NOOS 中维护，并尽量减少工作对 ChatGPT 隐式聊天历史的依赖。**
-
-这就是 Harness 的核心。
+这一区分很重要。否则 NOOS 很容易再次膨胀成一个“大而全 AI 平台”。
 
 ---
 
-# 3. 最重要的抽象：Run 不是 Conversation
+# 3. 最重要的对象边界：Run ≠ Provider Conversation ≠ Browser Session
 
-传统 Chatbot 的默认心智模型是：
+旧式 Chatbot 的默认心智模型是：
 
 ```text
 Conversation = 这项工作
 ```
 
-NOOS Harness 应改成：
+NOOS Harness 改成：
 
 ```text
-Run = 这项工作
-Conversation = 这项工作的一次执行载体
+Run = 用户真正拥有的长期工作
+Logical Thread = 这项工作中的一个持续角色 / 思考维度
+Provider Conversation = 某个平台保存的一段对话载体
+Browser Session = 某次网页运行与挂接环境
 ```
 
 例如：
@@ -180,220 +112,177 @@ Conversation = 这项工作的一次执行载体
 Run：World Condition → Fish Response
 │
 ├─ Logical Thread：Main Design
-│   ├─ ChatGPT Conversation A
-│   ├─ ChatGPT Conversation B
-│   └─ ChatGPT Conversation C
+│   ├─ Provider Conversation A (ChatGPT)
+│   ├─ Provider Conversation B (ChatGPT)
+│   └─ Provider Conversation C (Claude)
 │
 ├─ Logical Thread：Domain Review
-│   ├─ ChatGPT Conversation D
-│   └─ ChatGPT Conversation E
+│   └─ Provider Conversation D
 │
 └─ Logical Thread：Production Review
-    └─ ChatGPT Conversation F
+    └─ Provider Conversation E
+
+Browser Session / Tab / Adapter Attachment
+    ↳ 只是某一时刻承载上述 Conversation 的临时执行表面
 ```
 
-用户看到的始终是一个 Run。
+因此：
 
-底下究竟刷新了几次网页、换了几个 ChatGPT conversation，应该只是实现细节。
+- **Run 是 durable，NOOS-owned。**
+- **Logical Thread 是 durable，NOOS-owned。**
+- **Provider Conversation 是 replaceable carrier，通常由外部平台持久化，并且必须保留 provenance。**
+- **Browser Session / Adapter Attachment 才是真正 disposable 的 runtime resource。**
 
-因此可以形成一个非常重要的设计原则：
+这一区分直接决定后面的 Recovery、Rollover、provenance 和 adapter API。
 
-> **Run 是 durable object；Execution Session 是 disposable runtime resource。**
-
-这意味着：
-
-- 刷新页面不能丢工作；
-- ChatGPT tab 被关闭不能丢工作；
-- Conversation 太长可以换；
-- 浏览器重启以后可以恢复；
-- 将来甚至可以从 ChatGPT 切换到 Claude，而 Run 仍然存在。
+详细定义见：[`runtime-object-authority-model.md`](runtime-object-authority-model.md)。
 
 ---
 
-# 4. NOOS Harness 到底“拥有”什么？
+# 4. NOOS 拥有的不是“全部聊天记录”，而是 Working State
 
-一个容易走错的方向是：把所有聊天记录存下来，然后认为自己已经拥有上下文。
+只把完整 conversation 存下来，并不等于拥有上下文。
 
-这还不够。
+Harness 真正需要维护的是：
 
-Harness 真正应该拥有的是 **Current State**。
+```text
+Raw Transcript
+      ↓
+State Extraction / State Delta
+      ↓
+Run Working State
+      ↓
+Context Compiler
+      ↓
+Next Execution Projection
+```
 
-原始聊天只是证据和轨迹；当前状态才是下一轮工作的权威输入。
-
-可以把信息分成三层。
+可以把 Run 内的信息分成三层：
 
 ## 4.1 Durable Context
 
-长期必须稳定存在：
+长期稳定：
 
-- Goal；
-- Deliverable；
+- Goal / Deliverable；
 - Scope；
 - Constraints；
 - Confirmed Decisions；
 - Rejected Decisions；
-- 重要来源与事实。
+- 重要 Source Ref。
 
 ## 4.2 Working Context
 
-当前阶段还在变化：
+当前阶段变化较快：
 
 - Hypotheses；
 - Open Questions；
 - Current Frontier；
 - Active Branch；
-- 当前比较的方案；
-- 最近 reviewer 发现的问题。
+- Reviewer Issues；
+- 暂时有效的推导状态。
 
 ## 4.3 Ephemeral Context
 
-只在短时间内有价值：
+只对最近几轮有意义：
 
 - 某个例子；
 - 临时反驳；
 - exploratory branch；
-- 最近几轮的局部推理。
+- 最近几轮局部 reasoning trace。
 
-这类信息应该允许快速淘汰。
+原则不是“什么都不能忘”，而是：
 
-因此 Harness 的原则不是“什么都不能忘”，而是：
-
-> **默认原始 conversation history 都是可退出 working context 的；只有被提升为 State 的内容才获得持久语义。**
+> **默认 Raw Conversation 只是可回溯证据；只有被明确提升到 State 的内容才获得持续的工作语义。**
 
 ---
 
-# 5. Run State v0
+# 5. 但必须区分 Operational Authority 与 Epistemic Authority
 
-第一版不需要一上来建立复杂知识图谱。
+“Current State 是下一轮权威输入”这句话只能用于**运行控制和本 Run 的内部决策状态**，不能扩大成“State 是所有事实的最终真理”。
 
-一个最小 Run State 可以是：
+必须区分两种 Authority：
 
-```yaml
-run:
-  id:
-  title:
-  goal:
-  deliverable:
+## Operational Authority
 
-  scope:
-    in: []
-    out: []
+决定：
 
-  phase:
-  status:
-
-state:
-  constraints: []
-  decisions: []
-  rejected: []
-
-  hypotheses: []
-  open_questions: []
-
-  frontier:
-    current_problem:
-    current_position:
-    next_intent:
-
-  working_set:
-    active_branch:
-    recent_reasoning:
-    unresolved_evidence:
-
-  source_refs: []
-
-runtime:
-  primary_thread:
-  state_version:
-  checkpoint_id:
-```
-
-其中最值得强调的是四类信息。
-
-## 5.1 Decisions
-
-已经明确确认的决定。
-
-一个 Decision 不应该只有一句结论，还应该知道：
-
-```yaml
-id: D-017
-claim:
-rationale:
-status: active
-authority:
-reopen_if:
-origin:
-```
-
-`reopen_if` 很重要。
-
-它让“以后是否允许重新讨论”从模糊感觉变成显式条件。
-
-## 5.2 Rejected
-
-被否掉的重要方案必须单独保存。
-
-这是 **Negative Memory**。
-
-因为 LLM 很容易在 20 轮以后重新提出一个此前已经被否掉的“自然方案”。
-
-## 5.3 Open Questions
-
-长期任务最容易丢失的未必是答案，而是：
-
-> “我们还有什么没有想清楚？”
-
-Open Questions 应该是一等对象，而不是散落在聊天文本中。
-
-## 5.4 Frontier
-
-`frontier` 表示：
-
-> **现在究竟推到哪里，下一步为什么继续。**
+> 这个 Run 下一步如何执行？
 
 例如：
 
-```yaml
-frontier:
-  current_problem: Fish-specific interpretation 应产生哪些中间语义？
-  current_position: 已排除直接 World Condition → Spawn Weight。
-  next_intent: 推导 Spatial / Readiness / Interaction 三条输出路径。
+- 当前 Goal；
+- Scope；
+- 已确认的 Run Decision；
+- Open Question；
+- Frontier；
+- Next Action。
+
+这些由 Run State 管理。
+
+## Epistemic Authority
+
+决定：
+
+> 某个外部事实到底是真的什么？
+
+例如：
+
+- Notion Current Production Fact；
+- GitHub 当前代码；
+- 用户明确输入的 constraint；
+- 外部规范和正式文档。
+
+这些不能因为被模型总结进 State，就失去原始 Source Authority。
+
+更合理的链路是：
+
+```text
+Canonical Source
+      ↓
+Evidence Snapshot / Source Ref
+      ↓
+Run State interpretation
 ```
 
-有了 Frontier，“继续”才真正具有语义。
+而不是：
+
+```text
+Canonical Source
+      ↓
+模型总结一次
+      ↓
+State 永远变成真理
+```
+
+`source_ref` 因此应逐步允许表达：
+
+```yaml
+uri:
+authority:
+version:
+observed_at:
+freshness:
+```
+
+一句话：
+
+> **Run State 是 working authority，不是所有事实的 ultimate source of truth。**
 
 ---
 
-# 6. Compaction 不是“帮我总结一下”
+# 6. Compaction 不是 Summary，而是 Stateful Compaction
 
-这是整个 Harness 最容易做错的一块。
-
-如果每 20 轮就让模型：
+如果每二十轮都让模型：
 
 > “请总结以上对话。”
 
-那么它很容易把：
-
-- Confirmed；
-- Working Hypothesis；
-- Rejected；
-- Open Question；
-- Evidence；
-
-全部压成一篇流畅文字。
-
-流畅，但失真。
+它很容易把 Confirmed、Hypothesis、Rejected、Open Question、Evidence 压成一篇流畅但失真的文字。
 
 真正需要的是：
 
-> **Stateful Compaction，而不是 Summarization。**
+> **Stateful Compaction：从最近一段轨迹中提取结构化 State Delta，并更新短期 Carry Context。**
 
-例如原始讨论可能有 18,000 tokens，压缩后不应该只是：
-
-> “我们讨论了 Feeding Motivation，并认为……”
-
-而应该形成类似：
+例如：
 
 ```text
 CONFIRMED
@@ -403,91 +292,73 @@ RATIONALE
 目前不存在足够独立的生命周期或 producer-consumer ownership。
 
 REOPEN CONDITION
-未来若出现跨 tick 独立持久化需求，则重新评估。
+未来若出现独立持久化需求，则重新评估。
 
 OPEN
 Runtime 中应该用什么 derived representation 表达？
 ```
 
-这才能可靠地交给下一段推理。
+Raw Transcript 仍然归档，但退出 active working context。
 
 ---
 
-# 7. 模型不能直接重写 State：State Delta + Reducer
+# 7. LLM 不能直接重写 State：Proposal → Policy → Reducer
 
-为了防止一次 compaction 把旧结论悄悄改掉，模型不应该拥有直接覆盖 State 的权限。
+仅仅有 Reducer 还不够。
 
-更稳的结构是：
+Reducer 能保证 schema 和状态一致性，却不能回答：
+
+> “这个模型有没有资格把一个 hypothesis 直接升级为 Confirmed Decision？”
+
+因此正确链路应该是：
 
 ```text
-Old State v17
-      +
-State Delta
-      ↓
-NOOS Reducer
-      ↓
-State v18
+LLM / Tool
+   ↓
+State Delta Proposal
+   ↓
+Authority / Promotion Policy
+   ↓
+Authorized Delta
+   ↓
+Reducer
+   ↓
+State vN+1
+   ↓
+Audit Record
 ```
 
-模型只提出 Delta：
+可以把原则写成：
+
+> **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
+
+例如默认可自动执行：
 
 ```yaml
-base_version: 17
-
-operations:
-  - op: add_decision
-    id: D-023
-    claim: ...
-    rationale: ...
-
-  - op: close_question
-    id: Q-011
-    resolution: D-023
-
-  - op: open_question
-    id: Q-014
-    question: ...
-
-  - op: set_frontier
-    current_problem: ...
-    next_intent: ...
+agent_may:
+  - add_hypothesis
+  - add_evidence
+  - set_frontier
+  - close_exploratory_question
 ```
 
-最终修改 State 的是 NOOS Reducer，而不是 ChatGPT。
+而通常需要 Human Gate：
 
-Reducer 至少应该维护这些 invariant：
+```yaml
+human_required:
+  - product_choice
+  - change_scope
+  - supersede_confirmed_decision
+  - external_write
+```
 
-1. Decision 不能被静默删除，只能 supersede / reopen；
-2. Constraint 不能被模型顺手改写；
-3. Rejected 不能无理由复活；
-4. Canonical State 变更必须带 provenance；
-5. 不确定的内容只能进入 Working State，不能自动升级成 Confirmed。
-
-这形成一个核心安全原则：
-
-> **LLM proposes；NOOS owns state transitions。**
+这样 Human Gate 才真正和 State Transition 连起来。
 
 ---
 
-# 8. Context Compiler：真正“把控上下文”的地方
+# 8. Context Store ≠ Context Projection
 
-NOOS 能存多少资料，并不等于应该给模型多少资料。
-
-假设未来 Vault 中有 60 万 tokens，当前 Run State 有 2 万 tokens，而这一轮真正需要的只有：
-
-```text
-Task Contract
-+ Relevant Constraints
-+ Relevant Decisions
-+ Relevant Rejected
-+ Open Questions
-+ Current Frontier
-+ Working Set
-+ Relevant Sources
-+ Next Action
-```
-
-因此 NOOS 需要一个 Context Compiler：
+NOOS 知道的东西，不等于每次执行都应该让模型看到。
 
 ```text
 Vault / Sources
@@ -498,131 +369,137 @@ Current Action
       ↓
 Context Compiler
       ↓
-Context Projection
-      ↓
-Execution Session
+Purpose-built Context Projection
 ```
 
-注意两个概念的区别：
+一个 Run 可能关联几十万 token 的资料，但当前一次执行可能只需要：
 
-- **Context Store**：NOOS 知道什么；
-- **Context Projection**：这一轮 Chatbot 应该看到什么。
+```text
+Task Contract
+Relevant Constraints
+Relevant Decisions
+Relevant Rejected
+Current Frontier
+Working Set
+Relevant Source Excerpts
+Next Action
+```
 
-这才是 Harness 意义上的 context control。
+Context Compiler 的价值不在“拼接资料”，而在：
 
-它不是控制 ChatGPT 隐藏 system context，而是：
+1. **选择**；
+2. **裁剪**；
+3. **排序**；
+4. **维护 provenance**；
+5. **控制 working-set 大小**。
 
-> **控制工作真正依赖的显式上下文，并把历史噪音排除出去。**
+这才是 NOOS 真正能影响 Chatbot 工作上下文的地方。
 
 ---
 
-# 9. Refresh 与 Rollover 不是同一件事
+# 9. Context Control 的真实边界
 
-两者都能让“长时间工作继续下去”，但治疗的是不同问题。
+NOOS 无法完全控制 ChatGPT / Claude 的 context window。
 
-## 9.1 Refresh：重建网页运行环境
+它通常不能可靠读取或控制：
 
-解决：
+- system prompt；
+- account memory；
+- project instruction；
+- provider-side summary；
+- tool state；
+- provider policy。
 
-- DOM / React 状态积累；
-- streaming UI 长时间运行；
-- 页面临时变重；
-- 插件监听器长期运行。
+因此不再使用“Hard Context Control”这种过强表述。
 
-Conversation 不变。
+更准确地说：
 
-刷新必须只发生在 Safe Refresh Window：
+## Same Conversation：Soft Guidance
 
-```text
-Assistant 不在 streaming
-AND
-用户没有未提交输入
-AND
-最后一条消息已经稳定
-AND
-Run 状态已经持久化
-AND
-没有关键写操作正在进行
-```
+NOOS 可以：
 
-## 9.2 Rollover：重建模型工作环境
+- 重申 constraint；
+- 注入 relevant decision；
+- 检测 drift；
+- 给出 focused next action。
 
-解决：
+但无法真正删除既有 conversation history。
 
-- Conversation 太长；
-- Context Rot；
-- Semantic Phase 已经切换；
-- Working Set 已经完全变化；
-- 已出现重复讨论 / 决策复活 / 漂移。
+## New Provider Conversation：Controlled Context Reset
 
-流程是：
+Rollover 后，NOOS 可以更强地决定**显式投喂的工作历史**：
 
 ```text
-Current Conversation
-      ↓
-State Delta + Carry Context
-      ↓
-Checkpoint
-      ↓
-Context Compiler
-      ↓
-New Conversation
-      ↓
-Resume Same Run
+Harness Contract
++ Goal
++ Active State
++ Relevant Source Evidence
++ Carry Context
++ Next Action
 ```
 
-因此可以记住一句非常清楚的区别：
+因此：
 
-> **Refresh 解决页面运行环境；Rollover 解决模型工作环境。**
+> **Rollover 的价值不只是性能，而是获得更清晰的 explicit-history boundary。**
 
 ---
 
-# 10. 为什么 Rollover 是“硬上下文控制”的关键？
+# 10. Session Continuity：Refresh 与 Rollover 是两类不同治疗手段
 
-在同一个 ChatGPT conversation 中，NOOS 可以不断提醒模型：
+## Safe Refresh
 
-> “不要重新讨论 D-017。”
+目标：重建浏览器运行环境。
 
-但旧历史仍然存在。
+适合处理：
 
-这是 **Soft Context Control**。
+- 当前页面明显变慢；
+- DOM / streaming 生命周期积累；
+- adapter attachment 状态异常。
 
-只有进入新 Conversation 后：
+Provider Conversation 不变。
+
+## Conversation Rollover
+
+目标：重建模型工作的显式上下文边界。
+
+适合处理：
+
+- conversation history 太长；
+- semantic phase 已切换；
+- working set 已变化；
+- 重复、漂移、旧 decision 复活增多。
+
+Provider Conversation 更换，但仍属于同一个 Logical Thread / Run。
+
+因此：
 
 ```text
-Conversation A
-      ↓
-Compact
-      ↓
-Compile Projection
-      ↓
-Conversation B
+Performance degradation
+→ Prefer Refresh
+
+Context / semantic pressure
+→ Compact + Rollover
 ```
 
-NOOS 才能真正决定：
+Round Count 只能是 signal，不能变成“每 20 轮强制换房间”的死规则。
 
-- 哪些旧内容带进去；
-- 哪些彻底不再进入 active context；
-- 哪些 rejected 需要重新提醒；
-- 哪些 source excerpt 与当前 frontier 有关。
+页面卡顿的具体机理目前也只应视为 Candidate Mechanism。MVP 应遵循：
 
-这是 **Hard Context Control**。
-
-因此 Rollover 不是单纯性能优化，而是 Harness 架构的一部分。
+> **instrument first, optimize second.**
 
 ---
 
-# 11. “自动继续”应升级成 Action Policy
+# 11. Continuation 不是“继续”，而是 Next Action Policy
 
-真正的 Harness 不应该永远发送：
+Harness 不应该无脑发送：
 
-> “继续。”
+> 继续。
 
-它应该判断：
+它真正需要决定的是：
 
-> **下一步动作是什么？**
+> 下一步动作是什么？
 
-v0 可以只保留少量动作：
+v0 动作可以保持很小：
 
 ```text
 CONTINUE_FOCUSED
@@ -633,686 +510,421 @@ ASK_HUMAN
 COMPLETE
 ```
 
-例如正常推进时，不发送裸“继续”，而是生成：
+`CONTINUE_FOCUSED` 更像：
 
-> “继续处理 Q-014；不要重新总结已有模型，重点检查当前拆分是否造成 cause double-count。如果没有 substantive progress，明确报告已经收敛。”
+> 继续处理 Q-014；不要重新总结已关闭模型，重点检查这一拆分是否产生 double-count。
 
-这会显著减少 LLM 自己和自己无限写同义文字。
+这比裸“继续”更容易产生 substantive progress。
 
----
-
-# 12. Human Gate：什么时候必须叫用户回来？
-
-自动化的价值来自“不需要人一直守着”。
-
-因此不能模型一有疑问就停下来问人。
-
-Human Gate 应该主要保护 **Authority Boundary**。
-
-v0 只需要四类：
-
-## 12.1 Product Choice
-
-多个方案都合理，最终取决于产品偏好。
-
-## 12.2 Scope Change
-
-讨论准备从原任务扩展到另一个系统。
-
-## 12.3 Canonical Change
-
-准备推翻已经确认的重要 decision / constraint。
-
-## 12.4 Irreversible External Action
-
-例如：
-
-- 修改正式 Notion Current；
-- 改代码；
-- 删除数据；
-- 对外发布。
-
-至于：
-
-- 局部证据不足；
-- 某一轮没想清楚；
-- 需要再审查；
-- 可以自己再推一轮；
-
-Harness 应优先自行处理。
-
----
-
-# 13. Session Continuity Runtime
-
-从用户角度看，不应该暴露“自动刷新”“自动重连”这样的一堆技术功能。
-
-真正的产品能力只有一句：
-
-> **这项工作可以持续运行。**
-
-底下由 Session Continuity Runtime 负责：
+推荐决策优先级：
 
 ```text
-Auto Continue / Next Action
-        +
-Safe Refresh
-        +
-Crash / Tab Recovery
-        +
-Compaction
-        +
-Conversation Rollover
-```
-
-ChatGPT 页面应该被视为：
-
-> **Disposable Execution Surface**
-
-真正持久的运行状态必须在 NOOS 中。
-
----
-
-# 14. 浏览器插件如何参与？
-
-第一版最自然的入口仍然是 Browser Shuttle。
-
-它不应该把业务状态塞在 content script 中，而应分层：
-
-```text
-ChatGPT Page
-    ↕
-Content Script / ChatGPT Adapter
-    ↕
-Extension Background
-    ↕
-NOOS Harness Runtime
-    ├─ Run Store
-    ├─ State Reducer
-    ├─ Context Compiler
-    ├─ Action Policy
-    └─ Performance Controller
-```
-
-ChatGPT Adapter 只负责页面能力：
-
-- 识别 conversation；
-- 判断是否正在生成；
-- 读取最后一条 assistant message；
-- 输入 prompt；
-- send / stop；
-- 页面重连；
-- conversation URL / ID。
-
-这样未来 ChatGPT 页面改版，主要坏的是 Adapter，而不是整个 Harness。
-
-未来也可以拥有：
-
-```text
-Adapters
-├─ ChatGPT
-├─ Claude
-├─ Gemini
-├─ Claude Code
-└─ Codex
+1. User Activity
+2. State Integrity
+3. Authority Boundary
+4. Completion
+5. Page Health
+6. Context Health
+7. Progress
 ```
 
 ---
 
-# 15. v0 可以利用 Harness Control Block
+# 12. Recovery 不能只靠 Checkpoint：还需要 Execution Journal
 
-第一版未必需要额外调用一个 controller model。
+只有 `state_version` 和 `checkpoint_id` 不足以可靠恢复。
 
-Worker ChatGPT 可以在正常回答末尾，同时提出一个机器可读的 control proposal：
+典型故障：
 
 ```text
+NOOS 点击 Send
+↓
+Provider 已收到 prompt
+↓
+Browser 崩溃
+↓
+NOOS 重启
+```
+
+系统必须知道上一条 Action 到底执行到了哪一步，否则可能重复发送。
+
+因此需要一个最小 Execution Journal：
+
+```yaml
+action_id:
+run_id:
+logical_thread_id:
+provider_conversation_id:
+base_state_version:
+action:
+status: planned | sent | observed | committed
+provider_message_ref:
+created_at:
+```
+
+可以把它理解成：
+
+```text
+State Store = 现在是什么
+Execution Journal = 刚才发生了什么
+```
+
+Recovery 的目标不是“重新点一次按钮”，而是**幂等地恢复到可证明的执行状态**。
+
+---
+
+# 13. Harness Control Block 只是 Bootstrap Transport
+
+MVP 阶段，为了避免额外 controller model，可以让 Worker 在正常输出末尾追加一个机器可读的 Control Proposal：
+
+```html
 <!-- NOOS:CONTROL:BEGIN -->
 {
   "base_state_version": 17,
   "progress": "advanced",
   "next_action": "continue_focused",
-  "checkpoint_recommended": false,
-  "human_gate": null,
   "state_delta": []
 }
 <!-- NOOS:CONTROL:END -->
 ```
 
-Shuttle 捕获以后：
+这是一个很实用的 bootstrap 方案。
 
-```text
-parse
-→ validate
-→ reducer
-→ policy engine
-→ execute
-```
+但架构 contract 应该叫：
 
-关键点是：
+> **Control Proposal**
 
-> ChatGPT 给的是 proposal，不是命令。
+HTML marker 只是 transport implementation 之一。
 
-最终执行权仍然属于 NOOS。
+未来同一个 contract 可以来自：
 
-后续如果需要更高可靠性，再加入独立的 Shadow Controller，对 Worker 的完成判断、State Delta 和下一步动作做二次审查。
+- response marker；
+- provider structured output；
+- 独立 controller call；
+- local evaluator；
+- Shadow Controller。
 
----
-
-# 16. Performance Controller 不应该交给 LLM
-
-网页是否变卡，是浏览器可以直接观测的问题，不需要让模型猜。
-
-可以综合：
-
-- message 数量；
-- DOM node 数；
-- Long Task 频率；
-- 输入/滚动延迟；
-- 可获得时的内存趋势；
-- refresh 后是否恢复；
-- 插件 observer 自身开销。
-
-形成简单健康状态：
-
-```text
-GOOD
-DEGRADED
-CRITICAL
-```
-
-策略例如：
-
-```text
-DEGRADED
-→ 等待 Safe Window
-→ Refresh
-
-Repeatedly DEGRADED after Refresh
-→ 增加 Rollover Pressure
-```
-
-Round Count 只能是 signal，不能成为“每 20 轮强制换房间”的硬规则。
+不能把架构绑死在“ChatGPT 必须在结尾输出 JSON”。
 
 ---
 
-# 17. 多 Conversation 正交审查
+# 14. Multi-Conversation Review：建立在 Harness 之上
 
-在单线程 Harness 稳定以后，第二阶段才加入 Reviewer。
-
-原因很简单：
-
-如果一个 Chat 自己都不能稳定跑，那么开四个 Chat 只会制造四倍的管理问题。
-
-稳定以后，可以建立：
+没有 Harness 时：
 
 ```text
-                 Run State
-                    │
-             Review Snapshot
-                    │
-       ┌────────────┼────────────┐
-       ↓            ↓            ↓
- Domain Review  Product Review  Runtime Review
-       │            │            │
-       └────────────┼────────────┘
-                    ↓
-             Structured Issues
-                    ↓
-              Owner Adjudicate
-                    ↓
-             Run State Delta
+Main
+Reviewer A
+Reviewer B
+Reviewer C
 ```
 
-Reviewer 不应该得到整个历史聊天。
+只是制造了四条更难管理的聊天。
 
-它只得到为了自己的 review dimension 专门编译的 Context Projection。
+有 Harness 后：
 
-例如：
+```text
+Run State v37
+      ↓
+Review Snapshot RS-008
+      ↓
+┌──────────────┬──────────────┬──────────────┐
+Domain Review  Product Review Runtime Review
+└──────────────┴──────────────┴──────────────┘
+      ↓
+Structured Review Issues
+      ↓
+Owner Adjudication
+      ↓
+State Delta
+```
 
-- Domain Reviewer 重点获得术语、因果模型、domain constraints；
-- Product Reviewer 重点获得玩家可观察性、策略空间和体验目标；
-- Production Reviewer 重点获得 Current Production Facts 与兼容性约束。
-
-这就是 Context Compiler 在多 Agent 场景中的自然延伸。
-
----
-
-# 18. Reviewer 结果也要结构化
-
-不要把三个 Reviewer 的长篇自然语言全文直接塞回 Main。
-
-应该提炼成 Review Issue：
+Review Issue 至少应该记录：
 
 ```yaml
-issue_id: R-037
-dimension: domain-semantics
-severity: blocker
-
+issue_id:
+base_state_version:
+review_snapshot_id:
+dimension:
+severity:
 target:
-  decision: D-021
-
 claim:
-  current model conflates X and Y
-
 evidence:
-  - ...
-
 suggested_action:
-  reopen_decision
 ```
 
-然后由 Owner Thread 决定：
+`base_state_version` 很关键，因为 Reviewer 返回时 Main State 可能已经推进；Harness 必须能识别 stale review。
 
-```text
-ACCEPT
-REJECT
-DEFER
-NEEDS_HUMAN
-```
-
-这样 Review 才是一条可管理的工作流，而不是几个 AI 互相复制文章。
+这一层属于后续阶段，不是最初 MVP 的阻塞项。
 
 ---
 
-# 19. 外部知识源为什么应该晚一点做？
+# 15. Harness 与 NOOS Hub 的关系
 
-长期来看，NOOS 当然应该能从：
+NOOS 不应该再制造第二个本地中枢。
 
-- Notion；
-- Google Drive；
-- GitHub；
-- Local Markdown；
-- Wiki；
-- Reference Library；
+第一阶段直接定义：
 
-读取工作上下文。
+```text
+NOOS Hub
+├─ Vault / Artifact Store
+├─ Context Broker
+├─ Harness Runtime
+└─ Tool Router
 
-但这不是 Harness v0 的前置条件。
+Browser Shuttle
+└─ Provider / Chatbot Adapter
+```
 
-原因是如果第一版就开始做 OAuth、权限、写回、RAG、Provider adapter，产品会迅速失焦。
+因此：
 
-更合理的顺序是：
+> **Harness Runtime 是 Hub 的 Execution subsystem；Shuttle 是浏览器侧执行与连接层。**
 
-1. 先证明一个 Run 能自动持续工作；
-2. 再证明 NOOS 能通过 compaction + rollover 改善 context fidelity；
-3. 再证明多 Reviewer orchestration 有价值；
-4. 最后把外部 Source 接入 Context Compiler。
+除非以后性能或隔离要求证明必须拆服务，否则不要提前制造新的 daemon。
 
-届时外部资料并不是简单“做 RAG”，而是参与：
-
-> **为当前 Action 编译最合适的 Context Projection。**
+这与 NOOS 既有的 Context Hub / Shuttle 方向保持一致。
 
 ---
 
-# 20. MVP：只验证一个 Golden Path
+# 16. MVP 不再叫一个巨大 v0，而拆成五个可验证里程碑
 
-第一版应该极端克制。
+## M0 — Run Continuity Proof
 
-用户在当前 ChatGPT 对话里点击：
-
-> **Take Over This Thread**
-
-Harness：
+只验证：
 
 ```text
-Capture current conversation
-↓
-Create Run
-↓
-Create Main Logical Thread
-↓
-Attach current ChatGPT conversation as Execution Session
-↓
-Extract Initial State
-↓
-Start Auto Run
+Take Over
+→ Create Run
+→ Save Checkpoint
+→ Refresh / Close Browser
+→ Resume
 ```
 
-运行中：
+核心问题：
+
+> **工作能否从网页生命周期中解耦？**
+
+## M1 — Controlled Rollover
+
+验证：
 
 ```text
-Assistant Response
-↓
-Control Proposal
-↓
-State Delta
-↓
-Reducer
-↓
-Action Policy
-↓
+Conversation A
+→ Stateful Compaction
+→ Context Projection
+→ Conversation B
+→ Same Run
+```
+
+核心问题：
+
+> **换 Conversation 后，用户是否仍认为这是同一项连续工作，而且状态没有明显损失？**
+
+## M2 — Autonomous Continuation
+
+加入：
+
+```text
 CONTINUE_FOCUSED
-```
-
-页面变慢：
-
-```text
-DEGRADED
-↓
-Safe Refresh
-↓
-Reattach
-↓
-Fingerprint last message
-↓
-Resume
-```
-
-Context 开始变重或进入新阶段：
-
-```text
-Compaction
-↓
-Checkpoint
-↓
-Context Compiler
-↓
-Create Conversation B
-↓
-Inject Projection
-↓
-Resume Same Run
-```
-
-最后：
-
-```text
-Deliverable satisfied
-+ Open Questions sufficiently closed
-+ No blocker
-↓
+ASK_HUMAN
 COMPLETE
 ```
 
-用户回来以后看到的不是一堆底层操作，而是：
+核心问题：
+
+> **用户是否可以不持续盯着页面，而工作仍产生有效进展？**
+
+## M3 — Performance Self-Healing
+
+再加入：
 
 ```text
-Run completed
-
-31 autonomous rounds
-2 safe refreshes
-1 conversation rollover
-4 decisions added
-6 questions closed
-1 item requires your decision
+performance telemetry
+safe refresh
+auto reattach
+refresh / rollover pressure
 ```
 
-如果这一条 Golden Path 能稳定工作，这个产品假设已经很有价值。
+核心问题：
 
----
+> **页面性能问题能否变成 Runtime 自己处理的故障，而不是用户手工维护？**
 
-# 21. v0 暂时明确不做什么
+## M4 — Reviewer Orchestration
 
-为了防止 NOOS 再次长成“大而全平台”，第一阶段明确不做：
-
-- 不做完整知识库；
-- 不做 Notion / Drive 全量同步；
-- 不做 MCP Server 作为前置条件；
-- 不做所有 Chatbot；
-- 不做复杂 Multi-Agent Swarm；
-- 不做完整可视化 Workflow Builder；
-- 不做自动执行高风险外部写操作；
-- 不声称控制 ChatGPT 隐藏 context window。
-
-ChatGPT-first 即可。
-
----
-
-# 22. MVP Acceptance Criteria
-
-不能用“成功自动发送了 30 次继续”作为验收标准。
-
-真正需要验证的是下面这些。
-
-## 22.1 Continuity
-
-一个 Run 跨两个以上 ChatGPT conversation 后，用户仍认为它是同一项连续工作。
-
-## 22.2 State Fidelity
-
-已经 Confirmed 的 constraints / decisions 不会因为 compaction 或 rollover 静默丢失、变义。
-
-## 22.3 Negative Memory
-
-重要 Rejected 方案不会无理由重新出现。
-
-## 22.4 Progress
-
-自主轮次能够关闭问题、推进 Frontier，而不是单纯增加文字。
-
-## 22.5 Performance
-
-用户不需要因为 ChatGPT 页面逐渐卡顿而手动重建整项讨论。
-
-## 22.6 Recovery
-
-刷新、关闭 tab、浏览器重启后，Run 可以恢复到明确状态。
-
-## 22.7 Human Attention
-
-用户不需要全程守着；主要在真正 Authority Boundary 被叫回来。
-
----
-
-# 23. 必须做真实 Eval，而不是凭感觉
-
-Harness 最重要的产品假设是：
-
-> **External State + Stateful Compaction + Context Projection + Rollover，是否真的比一个无限增长的长 Chat 更好？**
-
-应该拿真实复杂设计任务做 A/B。
-
-### Baseline
+最后加入：
 
 ```text
-一个 ChatGPT conversation
-+ 人工不断继续
+review snapshot
+orthogonal reviewer
+issue merge
+owner adjudication
 ```
 
-### Harness
+核心问题：
 
-```text
-NOOS Run
-+ State Extraction
-+ Compaction
-+ Context Compiler
-+ Rollover
-```
-
-比较：
-
-| 指标 | Baseline | Harness |
-|---|---:|---:|
-| Decision retention | | |
-| Constraint violation | | |
-| Rejected reopen rate | | |
-| 重复讨论比例 | | |
-| Open Question closure | | |
-| Useful progress / round | | |
-| 人工介入次数 | | |
-| 页面性能 | | |
-| Active context size | | |
-
-如果 Harness 没有明显改善这些指标，它只是把“自动点击继续”做复杂了。
-
-如果显著改善，才证明 Harness 的核心成立。
+> **purpose-built reviewer projection 是否比一个超长主 Chat 自我审查更可靠？**
 
 ---
 
-# 24. 重新看 NOOS 的整体结构
+# 17. Eval：必须拆开机制贡献，而不是只做 Harness vs Long Chat
 
-此前 NOOS 更像一个 Context / Artifact Hub：
+整体 A/B 只能回答“Harness 有没有用”，不能回答“到底什么有用”。
 
-- Vault；
-- Handoff；
-- Crystal；
-- Result；
-- Artifact；
-- Context Pack；
-- Browser Shuttle。
+更好的实验分组：
 
-这些仍然成立。
+```text
+A. Long Chat
+   人工 Continue，不 Rollover
 
-现在真正补出来的是第二个平面：**Execution Plane**。
+B. Human-managed Rollover
+   人写 checkpoint，手工开新 Chat
+
+C. NOOS Controlled Rollover
+   Stateful Compaction + Projection + Rollover
+
+D. NOOS Autonomous Run
+   C + Action Policy
+```
+
+主要观察：
+
+- Decision retention；
+- Constraint violation；
+- Rejected option reopen rate；
+- Repeated discussion；
+- Open Question closure；
+- Useful progress / round；
+- Human intervention count；
+- Page performance；
+- Recovery correctness。
+
+需要保持一个严谨表述：
+
+> **我们观察到某些长 conversation 会出现重复、漂移和旧决策复活；长上下文研究为此提供 plausible mechanism，但具体到 ChatGPT 网页长聊是否由同一机制导致，仍然需要 NOOS 自己的真实任务实验验证。**
+
+---
+
+# 18. 当前 Acceptance Criteria
+
+Harness 的验收不能是“它会自动点继续”。
+
+至少应该有：
+
+### Continuity
+
+Run 跨多个 Provider Conversation 后，用户仍认为它是一项连续工作。
+
+### State Fidelity
+
+已确认 constraint / decision 不因 compaction 或 rollover 静默变化。
+
+### Authority Safety
+
+模型不能在没有授权的情况下，把 hypothesis 升级为 confirmed decision，或执行 scope / external write 变化。
+
+### Negative Memory
+
+已 rejected 的重要方案不会无条件复活。
+
+### Progress
+
+自主轮次能够关闭问题，而不是只增加文字量。
+
+### Performance
+
+长 Run 不要求用户因为页面卡顿而手工重开工作。
+
+### Recovery
+
+刷新、关闭 tab、浏览器重启后，能通过 Checkpoint + Execution Journal 幂等恢复。
+
+### Human Attention
+
+用户只在真正 Authority Boundary 上被叫回来。
+
+---
+
+# 19. NOOS 整体架构因此变成两个平面
 
 ```text
 NOOS
 │
-├─ Context / Knowledge Plane
+├─ Knowledge / Context Plane
 │  ├─ Vault
 │  ├─ Crystal
 │  ├─ Handoff
 │  ├─ Artifact
 │  ├─ Reference
-│  └─ External Sources
+│  └─ Context Broker
 │
 └─ Execution Plane
-   └─ NOOS Harness
+   └─ Harness Runtime
+      ├─ Runtime Object Model
       ├─ Run State
-      ├─ State Reducer
+      ├─ Authority / Promotion Policy
+      ├─ State Delta + Reducer
       ├─ Context Compiler
       ├─ Action Policy
       ├─ Session Continuity
+      ├─ Execution Journal
       ├─ Review Orchestration
-      └─ Tool Adapters
+      └─ Provider Adapters
 ```
 
-这两个平面的关系是：
+此前 NOOS 的主要命题是：
 
-> Knowledge Plane 回答“我们有什么上下文和产物”；Execution Plane 回答“拿到上下文以后，一项 AI 工作怎样持续运行”。
+> **NOOS owns user context.**
 
-这比把 NOOS 做成 all-in-one AI 工具更稳定：NOOS 不替代 ChatGPT、Claude、Codex，而是在它们之间持有用户自己的工作连续性。
+现在补上的第二个命题是：
 
----
+> **NOOS owns the continuity of AI work.**
 
-# 25. 命名：怒思、怒撕、努思、灵识，怎么选？
-
-命名不是 Harness 架构的一部分，但它会反过来影响产品第一印象，因此值得单独判断。这里先区分“产品语义是否贴合”和“名称是否可占有”两件事；以下只是产品命名判断与快速公开检索，不等同于正式商标 clearance。
-
-## 25.1 “怒思”
-
-这是当前最值得继续验证的中文主名候选。
-
-它的优势首先在于记忆点。`怒` 本身有明显张力，`思` 又把这种张力从“攻击别人”拉回到“强烈、持续地思考”。它和 NOOS 的发音关系也仍然存在，但不像纯音译那样没有中文语义。
-
-它尤其贴合 Harness 的工作方式：
-
-> 不是让模型回答一次，而是让一项复杂工作持续思考、继续推进、反复审查，直到真正收敛。
-
-相比“努思”，“怒思”更像一个具有性格的产品名；相比“怒撕”，它又少了直接冲突和撕扯的攻击性。
-
-主要风险有两个：
-
-- `怒` 仍然是负面情绪字，第一次看到的人可能先联想到愤怒，而不是高强度思考；
-- 在医疗、中医情志等语境里，“怒、思”也可以作为两个情志词并列出现，因此中文搜索里会出现少量无关噪音。
-
-快速公开检索暂未发现明显的同类 AI / 软件产品以“怒思”作为强品牌使用；搜索结果更多来自人名、餐饮或食品主体。但这不能替代正式商标、域名和应用商店检索。
-
-**当前判断：如果希望 NOOS 有较强个性和记忆点，“怒思”是目前最好的中文主名候选。**
-
-## 25.2 “怒撕”
-
-优点：
-
-- 极容易记；
-- 与 NOOS 有发音联想；
-- 很有开发者内部文化；
-- “把复杂问题撕开来分析”甚至有一点产品隐喻。
-
-问题：
-
-- 攻击性明显；
-- 玩梗感强；
-- 很容易先被理解为情绪冲突或“撕某人”；
-- 当产品进入企业知识、Agent orchestration、长期工作上下文后，气质会显得过窄。
-
-**结论：非常适合内部昵称 / codename / 彩蛋，不建议做正式中文主品牌。**
-
-## 25.3 “努思”
-
-“努思”最大的优点是安全、直白：努力思考、持续思考，与 Harness 的语义天然兼容。
-
-但重新检索后，它的问题比之前判断的更明显：中文市场已经存在长期使用“努思”的企业管理咨询 / 猎头品牌，公开资料还显示其曾申请并注册“努思 / Nush”相关商标；此外也存在新的“努思培训”等主体。即使这些业务与 AI Harness 并不完全同类，也会降低品牌独占感，并增加后续商标 clearance 的复杂度。
-
-另外，从纯产品感受上说，“努思”也更像教育、培训或咨询品牌，个性弱于“怒思”。
-
-**结论：语义合适，但当前不再作为首选。**
-
-## 25.4 “灵识”
-
-优点：
-
-- 语义漂亮；
-- 有“感知、智慧、认知”的感觉；
-- 和 AI / context / memory 很自然。
-
-问题：
-
-- 偏玄学与精神性；
-- 本身就是已有汉语词；
-- AI / 科技领域已经有多个产品、平台和概念使用；
-- 搜索辨识度和品牌可占有性较弱。
-
-**结论：语义很好，但不建议作为 NOOS 主品牌。**
-
-## 25.5 “努斯”
-
-如果 NOOS 本身有意呼应哲学术语 `nous`，那么“努斯”作为音译来源非常正。
-
-但它的问题是中文用户第一次看到几乎无法从字面理解产品，而且整体偏学术、古典，更适合作为词源解释，而不是产品名。
-
-## 25.6 当前排序
-
-综合产品语义、记忆度、个性和快速公开检索后的可占有性，当前建议是：
-
-1. **怒思**：正式中文名当前首选候选；
-2. **努思**：语义稳妥，但已有品牌使用，降级；
-3. **灵识**：语义漂亮，但过于通用且已有大量占用；
-4. **怒撕**：保留内部昵称 / codename。
-
-因此现阶段可以使用：
-
-> **NOOS / 怒思**
-
-并把“怒撕”保留成社区和开发阶段的内部玩笑。
-
-英文 `NOOS` 本身也仍然需要正式 clearance：截至 2026 年，已经存在同名 `noos` 的 LLM-agent reliability 项目，而且功能方向涉及 scope drift、circuit break、跨 session state 等，与当前 NOOS Harness 处于明显相邻领域。因此真正公开发布之前，英文名和中文名都应统一做商标、域名、GitHub、PyPI、npm、crates、应用商店和同类产品检索。
+这不是战略转向，而是把原本的 Context Hub 补成了可运行的工作系统。
 
 ---
 
-# 26. 下一步应该设计什么？
+# 20. 当前 Design Baseline
 
-到这个阶段，不建议继续横向增加 feature。
+目前最值得冻结的结论：
 
-下一步应该把三个底层 contract 正式化：
-
-1. **Harness Control Contract v0**  
-   Chatbot 每轮如何给出 progress、State Delta 和 next-action proposal。
-
-2. **State Delta Schema + Reducer Rules v0**  
-   哪些字段可变、哪些不可静默覆盖、Decision/Rejection/Open Question 如何有生命周期。
-
-3. **Continuation / Recovery State Machine v0**  
-   如何从 response complete 走到 continue / refresh / compact / rollover / human gate / complete，并保证幂等与崩溃恢复。
-
-完成这三项后，就已经足够进入一个可实现的浏览器插件 + 本地 runtime MVP。
+1. **Run 是核心 durable object。**
+2. **Provider Conversation 是 replaceable carrier，不是 disposable Browser Session。**
+3. **Raw Conversation 不是 Current State。**
+4. **Stateful Compaction 优于普通 Summary。**
+5. **Context Store 与 Context Projection 必须分离。**
+6. **Operational Authority 与 Epistemic Authority 必须分离。**
+7. **LLM 只能 propose；Policy authorizes；Reducer applies；NOOS records。**
+8. **Refresh 与 Rollover 必须分开。**
+9. **Recovery 需要 Execution Journal 与 idempotency。**
+10. **Reviewer Orchestration 建立在 Harness 基础之上。**
+11. **Harness Runtime 属于 NOOS Hub 的 Execution subsystem。**
+12. **必须通过真实任务 Eval 验证，不凭直觉冻结 Harness。**
 
 ---
 
-# 27. 最终判断
+# 21. 下一步文档顺序
 
-NOOS Harness 的价值并不在“替用户多点几次继续”。
+接下来不继续横向加功能。
 
-真正的价值是把 Chatbot 从一个需要人长期照看的聊天窗口，变成一个可以被外部系统监管、恢复、压缩、换代和编排的推理执行器。
+底层 contract 按以下顺序推进：
 
-它解决的是一类正在越来越明显的问题：
+1. **Runtime Object Model & Authority Model v0**  
+   Run / Logical Thread / Provider Conversation / Browser Session / Turn / Checkpoint / Authority / Promotion。
 
-> **模型已经足够聪明，但复杂 AI 工作还缺一个可靠的运行时。**
+2. **State Delta + Reducer Contract v0**  
+   State schema / operations / invariants / provenance / authorization boundary。
 
-NOOS 可以不拥有模型，却拥有 Run；不控制 ChatGPT 的隐藏上下文，却拥有 authoritative working state；不保存所有历史作为 active memory，却通过 Context Compiler 决定下一步真正需要什么。
+3. **Continuation State Machine v0**  
+   Continue / Human Gate / Complete / Compact / Rollover / Refresh。
 
-如果这条路线成立，NOOS 的产品核心就会从“跨工具搬运上下文”进一步变成：
+4. **Execution Journal & Recovery Contract v0**  
+   planned / sent / observed / committed / idempotency / reconciliation。
 
-> **让用户的 AI 工作在不同模型、不同 conversation、不同 session 之间仍然连续。**
+`Control Block` 只作为 Continuation Runtime 的 bootstrap transport，不单独占据架构中心。
 
-这就是 NOOS Harness 当前最值得验证的核心假设。
+---
+
+## Related
+
+- [Runtime Object Model & Authority Model v0](runtime-object-authority-model.md)
+- [Branding / Naming](../branding/naming.md)
