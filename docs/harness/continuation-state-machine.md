@@ -1,10 +1,10 @@
 # NOOS Harness｜Continuation State Machine v0
 
-> **状态**：Design Candidate v0  
+> **状态**：Design Candidate v0.1  
 > **日期**：2026-08-27  
 > **上位文档**：[NOOS Harness Overview v0.2](overview.md)  
 > **依赖基线**：[Runtime Object Model & Authority Model v0](runtime-object-authority-model.md) · [State Delta + Reducer Contract v0](state-delta-reducer-contract.md)  
-> **目标**：定义一个 Logical Thread 在结果到达以后，如何安全地决定继续、暂停、维护、rollover、完成或进入 reconciliation。
+> **目标**：定义一个 Logical Thread 在最新结果与状态 settle 后，如何安全地继续、暂停、请求人类、维护 context/browser、完成或进入 blocked/reconciliation。
 
 ---
 
@@ -12,9 +12,9 @@
 
 Continuation Runtime 不是“回答结束以后自动发送继续”。
 
-它真正负责的是：
+它负责的是：
 
-> **在 Run State 已经稳定、Authority 结果已经明确、当前网页/Provider 状态已经被观察之后，决定下一步允许发生什么，并把这个决定变成可恢复、可审计的 Action Intent。**
+> **在 State、Authority 和 Runtime observation 已经达到可判断状态后，决定下一步允许发生什么，并把有副作用或必须持久化的决定变成可恢复、可审计、不会重复创建的 Action Intent。**
 
 核心闭环：
 
@@ -23,36 +23,36 @@ Provider Turn observed
         ↓
 Result Ingestion
         ↓
-State Proposal(s)
+State Proposal(s) / Human Intervention Request(s)
         ↓
 Policy / Reducer settle
         ↓
-Run State + AuthorizationResult + ApplyResult
-        +
-Runtime Signals
-        +
-Control Proposal（可选）
+Applied Run State
++ Authorization / Gate state
++ Runtime Signals
++ optional Control Proposal
         ↓
-Continuation Policy
+Continuation Evaluation
         ↓
-Durable ContinuationDecision
+├─ no action / keep waiting
+└─ Durable ContinuationDecision
         ↓
 Execution / Session Runtime
         ↓
 Provider / Browser side effect
         ↓
-next observation
+Observed Runtime Event
+        ↓
+next cycle
 ```
 
-Continuation 不替代 Authority Policy，不替代 Reducer，也不负责解释一次 browser click 到底有没有成功。后者属于后续 Execution Journal & Recovery Contract。
+Continuation 不替代 Authority Policy，不替代 Reducer，也不负责证明 browser click / provider send 是否真的发生；后者属于 `Execution Journal & Recovery Contract`。
 
 ---
 
-# 1. 先钉死 ownership：Continuation 是谁的状态机？
+# 1. Ownership：Continuation 以 Logical Thread 为控制单元
 
 v0 以 **Logical Thread** 为控制单元，而不是整个 Run。
-
-原因是：
 
 ```text
 Run
@@ -61,7 +61,7 @@ Run
 └─ Production Review
 ```
 
-未来三个 Thread 可以处于不同状态：
+不同 Thread 未来可以处于不同状态：
 
 ```text
 Main Design       → RUNNING
@@ -73,35 +73,18 @@ Production Review → PAUSED_HUMAN
 
 > **一个 Logical Thread 拥有一个 Continuation Controller；Run 可以拥有多个 Controller。**
 
-M0–M2 可以只实现 primary/main thread，但对象边界先按这个模型冻结。
-
-Run-level fan-out / reviewer scheduling 属于后续 Workflow Orchestration，不塞进本文。
+M0–M2 可以只实现 primary/main thread。Run-level fan-out / reviewer scheduling 属于后续 Workflow Orchestration。
 
 ---
 
-# 2. 不要用一个巨大的单轴 state enum
+# 2. 不使用一个巨大的单轴 state enum
 
-Continuation 同时存在两类不同问题：
+Continuation 同时有两类问题：
 
-1. **控制权现在是否允许自动推进？**
-2. **当前一次执行循环进行到哪一步？**
+1. **控制权是否允许自动推进？**
+2. **当前执行循环进行到哪里？**
 
-如果把它们压成：
-
-```text
-WAITING
-PAUSED
-GENERATING
-REFRESHING
-HUMAN
-INGESTING
-ROLLOVER
-...
-```
-
-很快会发生状态爆炸。
-
-v0 因此拆成两个正交维度：
+v0 拆成两个正交维度：
 
 ```text
 Control Mode
@@ -117,55 +100,107 @@ Execution Phase
 RUNNING
 PAUSED_USER
 PAUSED_HUMAN
-BLOCKED_RECONCILIATION
+BLOCKED
 COMPLETED
 ```
 
+其中 `BLOCKED` 必须带 `block_reason`，至少允许：
+
+```text
+reconciliation_required
+state_integrity_failure
+control_basis_unavailable
+```
+
+这样不把所有系统问题都错误叫作 reconciliation，也避免为每一种 blocker 扩一个顶层 mode。
+
 ## 3.1 RUNNING
 
-允许 Continuation Policy 在满足 guard 时产生新的 autonomous Action Intent。
+满足 guard 时允许 Continuation Policy 产生新的 autonomous Action Intent。
 
 ## 3.2 PAUSED_USER
 
-用户显式 Pause，或用户正在输入/接管当前 Thread。
+只表示**用户已经明确接管/暂停该 Thread**，而不是“检测到用户刚刚敲了一个键”。
 
-原则：
+典型来源：
 
-> **用户操作优先于自动化。**
-
-进入 PAUSED_USER 并不意味着丢掉当前 in-flight provider response；已有结果仍可以被观察、持久化和 ingest，只是不再自动发送下一步。
+- explicit Pause；
+- manual takeover mode；
+- user policy 要求手工确认下一轮。
 
 ## 3.3 PAUSED_HUMAN
 
-存在一个 durable PendingHumanGate，当前工作必须等待人类 authority / choice / input。
+存在 durable PendingHumanGate，当前 Thread 必须等待人类 authority / choice / input。
 
-Continuation 不应不断重新问相同问题；它只引用已有 Gate。
+## 3.4 BLOCKED
 
-## 3.4 BLOCKED_RECONCILIATION
+系统当前没有安全自主路径，且 blocker 不是正常的 Human Authority Gate。
 
-系统无法证明自己知道“刚才到底发生了什么”或发现关键对象不一致，例如：
+例如：
 
-- 当前网页 Conversation 与 Logical Thread current carrier 不匹配；
-- dispatch 是否发生无法确定；
-- last observed message fingerprint 不一致；
-- State / Proposal / Authorization reference 断裂；
-- refresh 后页面位置无法和 journal 对齐。
+- `reconciliation_required`：不知道刚才 external action 是否发生；
+- `state_integrity_failure`：关键对象引用断裂；
+- `control_basis_unavailable`：没有足够依据可靠产生 next action，且 fallback evaluator 也失败。
 
-这种情况不能靠“再点一次 Continue”猜过去。
+原则：
 
-> **不确定执行历史时，宁可进入 reconciliation，也不要重复 side effect。**
-
-具体如何 reconcile 留给 Execution Journal & Recovery Contract。
+> **执行历史不确定时不重复 side effect；控制依据不充分时不靠裸“继续”掩盖失败。**
 
 ## 3.5 COMPLETED
 
-该 Logical Thread 已经完成，不再自动产生新的工作 Action。
+该 Logical Thread 已完成，不再自动产生新工作 Action。
 
-Primary Thread 的完成不自动等于整个 Run 完成；Run completion 仍由 Run-level completion policy / State transition 决定。
+Primary Thread 完成不自动等于整个 Run 完成。
 
 ---
 
-# 4. Execution Phase v0
+# 4. User Activity 是实时 Guard，不等于 Control Mode
+
+这是 v0 的重要修正。
+
+用户可能只是：
+
+- 开始输入；
+- 编辑草稿；
+- 又删除草稿；
+- 手工发送一条补充消息；
+
+这些都不应该自动把 durable controller state 永久改成 `PAUSED_USER`。
+
+因此分开：
+
+```text
+user_activity_signal
+= transient runtime guard
+
+PAUSED_USER
+= durable user control choice
+```
+
+## 4.1 用户正在输入
+
+```text
+user_activity_signal = active
+→ suppress new autonomous dispatch
+```
+
+但不自动把 mode 持久化为 PAUSED_USER。
+
+## 4.2 用户明确 Pause / Take Over
+
+```text
+→ mode = PAUSED_USER
+```
+
+## 4.3 用户手工提交一个 Turn
+
+该 Turn 按正常 Provider Turn 流程 ingest。
+
+处理完成后是否自动恢复 autonomous mode，由 `autonomy_policy` 决定，而不是因为“用户曾输入过”永久暂停。
+
+---
+
+# 5. Execution Phase v0
 
 ```text
 READY
@@ -176,68 +211,58 @@ SETTLING_STATE
 MAINTENANCE
 ```
 
-## 4.1 READY
+## 5.1 READY
 
-当前语义状态已经稳定，可以做下一步 Continuation Decision。
+当前语义状态已经稳定，可以做下一次 Continuation Evaluation。
 
-“稳定”至少意味着：
+至少意味着：
 
-- 当前 assistant turn 已经完整观察；
-- 与该 turn 相关的 State Proposal 已经产生或明确不存在；
-- Authorization / ApplyResult 已经 settle 到当前可知状态；
-- 没有已知 dispatch uncertainty。
+- 最新 assistant/user turn 已持久化；
+- 与最新 turn 相关的 State Proposal / InterventionRequest 已产生或明确不存在；
+- Authorization / ApplyResult 已 settle 到当前可知状态；
+- State Store 已消除 local apply ambiguity；
+- 没有已知 external dispatch uncertainty。
 
-## 4.2 DISPATCH_PENDING
+## 5.2 DISPATCH_PENDING
 
-已经有 durable ContinuationDecision，但对应 external/browser action 尚未被 Execution subsystem 证明已发出。
-
-这个 phase 非常重要：
+已经有 durable ContinuationDecision，需要执行 external/browser/runtime action，但 Execution subsystem 尚未证明 side effect 已发生。
 
 ```text
-决定发送
+Decision created
 ≠
-已经发送
+Action dispatched
 ```
 
-Execution Journal 后续负责区分 planned / dispatched / observed 等事实。
+## 5.3 AWAITING_PROVIDER
 
-## 4.3 AWAITING_PROVIDER
+Execution subsystem 已有足够事实证明工作 prompt/request 已经 dispatch，正在等待 Provider response。
 
-Execution subsystem 已有足够证据认为请求已经发送，当前等待 Provider response。
+此 phase **禁止再发第二条 autonomous Continue**。
 
-Continuation 在这个 phase 不允许再发第二条 Continue。
+## 5.4 INGESTING_RESULT
 
-## 4.4 INGESTING_RESULT
+新 Turn 已观察到，正在 capture / fingerprint / parse / extract。
 
-Provider 新结果已经观察到，正在：
+## 5.5 SETTLING_STATE
 
-- capture Turn；
-- 计算 fingerprint；
-- 解析 Control Proposal（若采用 bootstrap marker）；
-- 抽取 state-related request。
+与最新结果相关的 Proposal / Authorization / Reducer 正在 settle。
 
-## 4.5 SETTLING_STATE
+Continuation 不能拿旧 State 给最新回答做 next-action 决策。
 
-与最新 Turn 相关的 Proposal / Authorization / Reducer 正在收敛。
+## 5.6 MAINTENANCE
 
-Continuation 必须等这一步结束以后再决定下一步；不能拿旧 State 对最新回答做决策。
-
-## 4.6 MAINTENANCE
-
-正在执行不会产生新业务推理结果的 runtime maintenance，例如：
+正在执行不会直接产生新的业务推理结果的 runtime maintenance：
 
 - Safe Refresh；
 - reattach；
-- Controlled Rollover saga；
-- context compaction / checkpoint preparation。
+- same-conversation Compaction；
+- Controlled Rollover saga。
 
-Maintenance 结束后回到 READY，或因为不一致进入 BLOCKED_RECONCILIATION。
+具体 maintenance saga 的 step-level recovery 由 Execution Journal 负责。
 
 ---
 
-# 5. Continuation Controller 最小持久状态
-
-建议：
+# 6. Continuation Controller 最小持久状态
 
 ```yaml
 continuation_state:
@@ -246,6 +271,7 @@ continuation_state:
 
   mode: RUNNING
   phase: READY
+  block_reason:
 
   current_decision_id:
   pending_human_gate_id:
@@ -258,29 +284,19 @@ continuation_state:
   updated_at:
 ```
 
-这里故意不复制整个 Run State，也不复制 Execution Journal。
+这里不复制整个 Run State，也不复制 Execution Journal。
 
-`expected_provider_conversation_id` 是 runtime guard，不是第二份 ownership；真正 current carrier 仍属于 Logical Thread。
+`expected_provider_conversation_id` 是 guard；真正 current carrier ownership 仍属于 Logical Thread。
 
 ---
 
-# 6. ContinuationDecision：Decision 必须 durable
+# 7. ContinuationDecision：durable、immutable、幂等创建
 
-与 State Proposal 同样，Continuation 的“下一步决定”不能只是一个内存中的 if/else 返回值。
+Continuation 的“下一步决定”不能只是内存中的 if/else。
 
-否则：
+但仅仅 durable 还不够：如果 controller 在“已经持久化 Decision、但调用者没拿到结果”后 crash，重启时也不能基于同一输入再创建一个新的 Decision ID。
 
-```text
-Policy 决定发送 Continue
-↓
-进程崩溃
-↓
-重启后重新算一次
-↓
-可能重复发送
-```
-
-因此 v0 定义 durable ContinuationDecision：
+因此 v0 定义：
 
 ```yaml
 continuation_decision:
@@ -292,9 +308,13 @@ continuation_decision:
     state_version:
     provider_conversation_id:
     last_turn_ref:
+    latest_gate_refs: []
     authorization_result_ids: []
     apply_result_ids: []
     runtime_signal_snapshot_ref:
+    control_proposal_ref:
+
+  basis_fingerprint: sha256:...
 
   action: CONTINUE_FOCUSED
   next_intent:
@@ -303,19 +323,94 @@ continuation_decision:
   created_at:
 ```
 
-原则：
+## 7.1 Basis fingerprint
 
-> **ContinuationDecision 表示“系统决定下一步应该做什么”；Execution Journal 表示“这个决定后来实际发生了什么”。**
+`basis_fingerprint` 对所有影响决策的**持久输入快照**做指纹。
 
-后续 Execution Journal 应以 `continuation_decision.id` 作为重要 idempotency / correlation key。
+v0 invariant：
+
+> **同一个 Logical Thread，对同一个 `basis_fingerprint` 至多存在一个有效 ContinuationDecision。**
+
+重启后若发现：
+
+```text
+same logical_thread_id + same basis_fingerprint
+```
+
+已经有 Decision：
+
+```text
+→ reuse existing Decision
+```
+
+而不是重新跑策略产生第二个 ID。
+
+若策略需要模型 evaluator，evaluator 的结构化输出必须先成为 durable `ControlProposal` / evaluation artifact，再进入 basis；不能把一次不可复现的临时模型调用藏在 decision transaction 内。
+
+## 7.2 Decision 与 Controller phase 的 local crash consistency
+
+对于需要 execution 的 action，至少应在一个本地 durable transaction 中：
+
+```text
+write ContinuationDecision
++
+set continuation_state.current_decision_id
++
+phase = DISPATCH_PENDING
+```
+
+避免出现：
+
+```text
+Decision 已 durable
+但 controller 仍显示 READY
+→ restart 后重复创建 Decision
+```
+
+具体 DB 实现不在本文冻结，但 crash-consistency invariant 在本文冻结。
+
+## 7.3 Decision ≠ Execution Fact
+
+> **ContinuationDecision 表示“应该做什么”；Execution Journal 表示“后来实际发生了什么”。**
+
+后续 Execution Journal 应使用 `continuation_decision.id` 作为 correlation / idempotency key。
 
 ---
 
-# 7. Action Vocabulary v0
+# 8. WAIT 不是 durable Action
 
-Continuation 不需要几十种 action。
+旧设计把 `WAIT` 放进 Action Vocabulary，会产生大量没有价值的 durable Decision：
 
-第一版保持：
+```text
+Provider generating
+→ WAIT
+→ poll
+→ WAIT
+→ poll
+→ WAIT
+```
+
+v0 改成：
+
+> **如果当前没有安全可执行动作，Continuation Evaluation 可以返回 `no_action`，不创建 ContinuationDecision。**
+
+例如：
+
+```text
+phase = AWAITING_PROVIDER
+→ keep waiting
+```
+
+```text
+user_activity_signal = active
+→ suppress dispatch / no new Decision
+```
+
+只有需要真正执行一个动作或持久改变控制状态时，才创建 ContinuationDecision。
+
+---
+
+# 9. Action Vocabulary v0
 
 ```text
 CONTINUE_FOCUSED
@@ -324,96 +419,83 @@ REFRESH_SURFACE
 START_ROLLOVER
 PAUSE_FOR_HUMAN
 PAUSE_FOR_USER
-ENTER_RECONCILIATION
+ENTER_BLOCKED
 REQUEST_COMPLETE
-WAIT
 ```
 
-## 7.1 CONTINUE_FOCUSED
+## 9.1 CONTINUE_FOCUSED
 
-不是裸：
+不是裸“继续”，而是提供明确 `next_intent`。
 
-> 继续。
+最终 prompt 由 Context Compiler / Provider Adapter 构造，Decision 不保存完整大 prompt。
 
-而是给 Context Compiler 一个明确的 `next_intent`，例如：
+## 9.2 COMPACT_CONTEXT
 
-```text
-继续处理 Q-014；不要重新总结已关闭内容；
-优先检查当前拆分是否产生 double-count，争取关闭一个 open question。
-```
+只表示：
 
-最终 prompt 由 Context Compiler / Provider Adapter 构造，ContinuationDecision 不需要保存完整大 prompt。
+> **在当前 Provider Conversation 内做一次 Stateful Compaction / Carry Context refresh，并在 State settle 后重新 evaluate。**
 
-## 7.2 COMPACT_CONTEXT
+它不会隐式自动接着执行 Rollover。
 
-触发一次 stateful compaction / carry-context refresh。
+如果 compaction 之后仍应 rollover，必须基于**新的 State / health basis** 创建新的 `START_ROLLOVER` Decision。
 
-它可以独立发生，也可以作为 Rollover 的前置 maintenance。
+## 9.3 REFRESH_SURFACE
 
-Compaction 不允许 whole-state rewrite；仍遵守 State Delta Contract。
+重建 Browser Session / Adapter Attachment，不更换 Provider Conversation。
 
-## 7.3 REFRESH_SURFACE
+## 9.4 START_ROLLOVER
 
-只重建 Browser Session / Adapter Attachment，不更换 Provider Conversation。
+启动 Controlled Context Reset。
 
-## 7.4 START_ROLLOVER
+v0 中 `START_ROLLOVER` saga **自己包含为了安全 rollover 所必需的 final compaction/checkpoint/projection**；不要要求调用方先发一笔 `COMPACT_CONTEXT` 再假设下一笔一定 rollover。
 
-启动 Controlled Context Reset：旧 Provider Conversation 保留 provenance，新 Conversation 成为同一个 Logical Thread 的新 current carrier。
+所以：
 
-## 7.5 PAUSE_FOR_HUMAN
+- `COMPACT_CONTEXT` = 留在当前 Conversation；
+- `START_ROLLOVER` = 进入完整 rollover saga，内部包含必要 compaction。
 
-Continuation 本身不篡改 State，也不“假装批准”。它将 mode 切到 PAUSED_HUMAN，并引用 durable PendingHumanGate。
+## 9.5 PAUSE_FOR_HUMAN
 
-## 7.6 PAUSE_FOR_USER
+切到 PAUSED_HUMAN，并引用已有 durable PendingHumanGate。
 
-用户主动接管时停止自动下一步。
+## 9.6 PAUSE_FOR_USER
 
-## 7.7 ENTER_RECONCILIATION
+只用于用户明确 Pause/Takeover 或 policy 要求手工模式。
 
-当执行历史/页面/State 之间无法可靠对齐时进入保护状态。
+## 9.7 ENTER_BLOCKED
 
-## 7.8 REQUEST_COMPLETE
+进入 `BLOCKED`，必须有明确 `block_reason`。
 
-“模型说做完了”不能直接让 Thread / Run 消失。
+## 9.8 REQUEST_COMPLETE
 
-Continuation 只能提出 completion request。若 completion 需要修改 Run operational status，应继续走 State Proposal → Policy → Reducer。
-
-只有完成状态真正被应用，或 Thread-level completion policy 明确允许后，mode 才进入 COMPLETED。
-
-## 7.9 WAIT
-
-当前没有安全可执行动作，例如 Provider 仍 generating。
-
-WAIT 不产生 external side effect。
+请求 completion governance；不直接改 State。
 
 ---
 
-# 8. Continuation Policy 的输入
-
-Continuation 不应该只读模型一句“下一步建议”。
+# 10. Continuation Policy 的输入
 
 至少综合四类输入。
 
-## 8.1 Semantic / State inputs
+## 10.1 Semantic / State
 
 ```text
-Run State
-Committed State
-Working State
+Applied Run State
+Committed / Working State
 Frontier
 Open Questions
 Run / Thread status
 ```
 
-## 8.2 Authority inputs
+## 10.2 Authority / Human
 
 ```text
-latest AuthorizationResult(s)
+AuthorizationResult(s)
 PendingHumanGate(s)
-latest ApplyResult(s)
+HumanGateResolution(s)
+ApplyResult(s)
 ```
 
-## 8.3 Runtime inputs
+## 10.3 Runtime
 
 ```text
 user activity
@@ -421,15 +503,16 @@ provider generation state
 adapter attachment state
 page health
 context health
-execution ambiguity / reconciliation signal
+execution ambiguity / integrity signals
 ```
 
-## 8.4 Control Proposal（可选）
+## 10.4 Control Proposal（可选）
 
-Bootstrap 阶段可以让 Worker / Shadow Controller 给一个 advisory proposal：
+Worker / Shadow Controller 可以产生 advisory proposal：
 
 ```yaml
 control_proposal:
+  id:
   based_on_state_version:
   last_turn_ref:
 
@@ -440,17 +523,17 @@ control_proposal:
   completion_candidate:
   blocker_summary:
   state_proposal_refs: []
+
+  created_at:
 ```
 
-Control Proposal **不是 authority**。
-
-> Worker 可以建议“继续 / 完成 / 需要用户”，最终 action 仍由 Continuation Policy 决定。
+Control Proposal 必须是 advisory，不是 authority。
 
 ---
 
-# 9. 一个必要的 Human Gate 泛化：Authorization Gate ≠ 所有 Human Gate
+# 11. Human Gate：Authorization Gate 与 Pre-State Intervention Gate
 
-State Delta Baseline 已经正确处理一种 Gate：
+State Delta Baseline 已处理：
 
 ```text
 Concrete State Proposal
@@ -459,28 +542,15 @@ Concrete State Proposal
 → PendingHumanGate
 ```
 
-例如：
+但复杂设计中还有：
 
-```text
-“把 D-021 supersede 为 D-044”
-```
+> **系统知道必须让用户选择，但用户选择前没有唯一 desired state transition。**
 
-这是一个已经明确的 desired transition，只是缺人类 authority。
+例如 A/B 都合理，取决于产品偏好。
 
-但复杂设计里还有另一类情况：
+这时不能伪造 `commit_decision(A)` 让用户“批准”。
 
-> **系统知道必须让用户做选择，但在用户选择以前，还不存在唯一的 desired state transition。**
-
-例如：
-
-```text
-方案 A 与 B 都成立；
-选择取决于产品偏好。
-```
-
-这时不应该伪造一个 `commit_decision(A)` 再让用户“批准”，也不应该建立一个没有 selection 的假 mutation。
-
-因此 v0 增加一个极小对象：
+因此 Continuation Candidate 引入：
 
 ```yaml
 intervention_request:
@@ -494,13 +564,13 @@ intervention_request:
   prompt:
   options: []
   basis_refs: []
-
+  request_fingerprint:
   created_at:
 ```
 
-它是 durable、immutable 的“需要人类输入”请求，不是 State mutation。
+InterventionRequest 是 durable、immutable 的“需要人类输入”请求，不是 State mutation。
 
-PendingHumanGate 因此允许两种 origin：
+PendingHumanGate 允许两种 origin：
 
 ```yaml
 pending_human_gate:
@@ -514,65 +584,93 @@ pending_human_gate:
 
   gate_kind:
   prompt:
-  status: pending | approved | rejected | answered | cancelled
+  status: pending | resolved | cancelled
   created_at:
   resolved_at:
 ```
 
-两类 Gate 的后续不同：
+---
+
+# 12. HumanGateResolution：用户回答也必须 durable
+
+如果 A/B Gate 的用户回答只存在于 UI callback 内：
 
 ```text
-Authorization Gate approved
-→ Policy re-evaluates original immutable State Proposal
+user chooses B
+↓
+Hub crash before new State Proposal
+```
+
+答案就会丢。
+
+因此 v0 Candidate 定义 durable immutable resolution record：
+
+```yaml
+human_gate_resolution:
+  id:
+  gate_id:
+  run_id:
+  logical_thread_id:
+
+  actor_ref:
+  resolution_kind:
+    approved | rejected | answered | cancelled
+
+  answer_payload:
+  answer_fingerprint:
+  observed_at:
+```
+
+关系：
+
+```text
+Authorization Gate
+→ approved/rejected
+→ Policy re-evaluates original immutable Proposal
 ```
 
 ```text
-Intervention Gate answered
-→ 根据用户答案生成新的 State Proposal / Working State update
-→ 再走 Policy + Reducer
+Intervention Gate
+→ answered
+→ durable HumanGateResolution
+→ derive new State Proposal from answer
+→ Policy + Reducer
 ```
 
-这样可以保持三个原则同时成立：
+Gate status 与 Resolution 必须 crash-consistent：不能出现“Gate 已 resolved，但找不到回答内容”。
 
-1. Human Gate durable；
-2. Reducer 不拥有 Human Gate；
-3. Proposal 仍然只描述真正的 desired state transition。
+这部分最终是否提升进 Runtime Object Baseline，待本篇接口 Review 后决定。
 
 ---
 
-# 10. Continuation Decision Priority v0
+# 13. Deterministic Decision Priority v0
 
-Policy 不采用“谁分数高谁赢”的黑箱加权。v0 先用确定性优先级。
+v0 不用黑箱加权分数做顶层 arbitration。
 
-推荐顺序：
+优先级：
 
 ```text
 0. Explicit User Control
-1. Integrity / Reconciliation
+1. Integrity / Execution Ambiguity
 2. Existing Human Gate
 3. Provider In-flight
 4. Completion Already Applied
-5. Maintenance Safety
-6. Page Health
-7. Context Health
-8. Semantic Progress / Completion Candidate
+5. Completion Candidate
+6. Maintenance Need (Page × Context jointly)
+7. Semantic Progress
 ```
 
-展开如下。
+## 13.1 Explicit User Control
 
-## 10.1 Explicit User Control
-
-用户 Pause / typing / manual takeover：
+Explicit Pause / Takeover：
 
 ```text
 → PAUSED_USER
 ```
 
-用户操作永远压过“系统想自动 Continue”。
+Transient typing 只作为 dispatch guard，不自动持久 Pause。
 
-## 10.2 Integrity / Reconciliation
-
-如果存在：
+## 13.2 Integrity / Execution Ambiguity
 
 ```text
 conversation mismatch
@@ -581,64 +679,71 @@ state/reference inconsistency
 message fingerprint mismatch
 ```
 
-```text
-→ ENTER_RECONCILIATION
-```
+→ `ENTER_BLOCKED(reconciliation_required | state_integrity_failure)`。
 
-不能猜。
+## 13.3 Existing Human Gate
 
-## 10.3 Existing Human Gate
-
-存在 pending durable gate：
+存在 pending Gate：
 
 ```text
 → PAUSE_FOR_HUMAN
 ```
 
-## 10.4 Provider In-flight
-
-Provider 正在生成：
+## 13.4 Provider In-flight
 
 ```text
-→ WAIT
+→ no_action / keep AWAITING_PROVIDER
 ```
 
-绝不同时再发第二条自主消息。
+绝不发送第二条自主消息。
 
-## 10.5 Completion Already Applied
+## 13.5 Completion Already Applied
 
-Thread / Run 已经被正式标记 completed：
+Thread/Run 已正式 completed：
 
 ```text
 → COMPLETED
 ```
 
-不要因为 Auto Run 开着就继续讨论一个已经完成的任务。
+## 13.6 Completion Candidate
 
-## 10.6 Maintenance Safety
-
-如果当前不处于 Safe Window，Refresh/Rollover 即使“应该发生”，也先 WAIT。
-
-## 10.7 Page Health
-
-页面性能已经退化，但 context 仍健康：
+若最新 settled state 已满足 completion candidate，应在做昂贵 Refresh/Rollover 之前先进入 completion governance：
 
 ```text
+→ REQUEST_COMPLETE
+```
+
+避免“任务其实已经完成，却先为了优化长聊天去 refresh/rollover”。
+
+## 13.7 Maintenance Need：Page × Context 联合判断
+
+Page Health 与 Context Health 是两个不同信号，但**不能写成两个彼此覆盖的顺序优先级**。
+
+使用二维决策：
+
+```text
+Context healthy + Page degraded
 → REFRESH_SURFACE
 ```
 
-## 10.8 Context Health
-
-Context pressure / semantic boundary 明显：
-
 ```text
-→ COMPACT_CONTEXT
-→ 必要时 START_ROLLOVER
+Context pressured
+→ prefer START_ROLLOVER when safe
 ```
 
-## 10.9 Semantic Progress / Completion Candidate
+```text
+Context healthy + only semantic carry-context needs cleanup
+→ COMPACT_CONTEXT
+```
 
-都没有更高优先级 blocker 时：
+```text
+Page degraded + Context pressured
+→ START_ROLLOVER when safe
+```
+
+只有 Context 仍健康时，才优先用 Refresh 治疗纯 browser lifecycle 问题。
+
+## 13.8 Semantic Progress
 
 ```text
 advanced
@@ -647,126 +752,128 @@ advanced
 
 ```text
 low_progress
-→ 改变 next_intent，要求关闭具体问题 / 暴露 blocker
+→ focused recovery intent
 ```
 
 ```text
-candidate_complete
-→ REQUEST_COMPLETE
-```
-
-```text
-blocked by human-only choice
-→ create InterventionRequest
-→ PendingHumanGate
-→ PAUSED_HUMAN
+blocked by genuine human-only choice
+→ InterventionRequest + Gate
 ```
 
 原则：
 
-> **信息不足、局部矛盾、需要多推一轮，不自动等于 Human Gate。只有真正越过 authority boundary 或没有任何授权自主路径时才叫人。**
+> **信息不足、需要多推一轮、局部矛盾，不自动等于 Human Gate。**
 
 ---
 
-# 11. User Preemption：自动化必须随时让路
+# 14. User Preemption
 
-用户可能在系统准备发送下一轮时开始输入。
+User activity 是 dispatch-time guard，必须在**真正 external side effect 发生前最后检查一次**。
 
-因此 user activity 是实时 guard，而不是只在 READY 时检查一次。
-
-## 11.1 未 dispatch 前
-
-如果：
+## 14.1 Decision 尚未 dispatch
 
 ```text
-ContinuationDecision 已创建
 phase = DISPATCH_PENDING
+current autonomous Decision exists
 ↓
-用户开始输入
+user starts typing
 ```
 
-应：
+Execution subsystem 必须 suppress/cancel 这次 autonomous dispatch。
+
+Decision 保留 audit；具体 `suppressed_before_dispatch` 事件留给 Execution Journal。
+
+只有 explicit takeover 才把 mode 改成 PAUSED_USER。
+
+## 14.2 Dispatch outcome 不确定
+
+如果 user takeover 与 dispatch race 导致“不知道 autonomous prompt 是否已经发出”：
 
 ```text
-cancel / suppress pending autonomous dispatch
-mode → PAUSED_USER
+→ BLOCKED(reconciliation_required)
 ```
 
-Decision 保留 audit，不删除。
+不能再发一次猜测。
 
-## 11.2 已 dispatch 但未确认时
+## 14.3 Provider 已 generating
 
-不能简单再发用户消息或再次 Continue。
-
-```text
-→ BLOCKED_RECONCILIATION / Recovery path
-```
-
-具体判断依赖 Execution Journal。
-
-## 11.3 Provider 已生成中
-
-用户 Pause 只阻止“下一步自动继续”；当前 response 仍可以正常被观察、ingest 和 settle。
+用户 Pause 只阻止下一步 autonomous dispatch；当前 response 仍可以观察、ingest、settle。
 
 ---
 
-# 12. Result Ingestion 顺序必须固定
-
-收到 Assistant Turn 后，不应该立刻依据自然语言最后一句发送下一条。
-
-正确顺序：
+# 15. Result Ingestion 顺序固定
 
 ```text
-Assistant Turn observed
-      ↓
+Turn observed
+↓
 Persist Turn + fingerprint
-      ↓
+↓
 INGESTING_RESULT
-      ↓
-Parse Control Proposal（if any）
-      ↓
+↓
+Parse / obtain Control Proposal（if configured）
+↓
 Create durable State Proposal(s) / InterventionRequest(s)
-      ↓
+↓
 SETTLING_STATE
-      ↓
+↓
 Policy / Reducer settle
-      ↓
+↓
+State Store resolves local Delta replay vs true stale
+↓
 Read latest Applied State
-      ↓
-Check PendingHumanGate
-      ↓
+↓
+Read PendingHumanGate / Gate Resolution
+↓
 READY
-      ↓
-Continuation Decision
+↓
+Continuation Evaluation
 ```
 
-因此：
-
-> **Continuation 永远基于“最新结果已经进入治理后的状态”，而不是基于尚未落地的自然语言建议。**
+> **Continuation 基于治理完成后的最新状态，而不是看到自然语言最后一句就自动继续。**
 
 ---
 
-# 13. Safe Refresh Contract
+# 16. Control Proposal 缺失/损坏 ≠ Reconciliation
 
-`REFRESH_SURFACE` 只能在 Safe Refresh Window 执行。
+如果 assistant response 正常，但 bootstrap Control Proposal marker 缺失或 malformed：
 
-v0 至少要求：
+这不代表“external execution history 不确定”。
+
+因此不应默认进入 `reconciliation_required`。
+
+推荐：
+
+```text
+1. persist full Turn
+2. deterministic format repair（仅格式层）
+3. fallback local/independent evaluator（若配置）
+4. 若仍无可靠 next-action basis
+   → BLOCKED(control_basis_unavailable)
+```
+
+只有同时发生 dispatch/head/fingerprint 等执行事实不一致时，才使用 `reconciliation_required`。
+
+---
+
+# 17. Safe Refresh Contract
+
+`REFRESH_SURFACE` 只能在 Safe Refresh Window 执行：
 
 ```text
 Provider not generating
 AND no unresolved dispatch uncertainty
-AND latest observed assistant turn is persisted/fingerprinted
-AND current Run/Continuation state is durable
+AND latest observed turn persisted/fingerprinted
+AND current Run/Continuation state durable
 AND no unsent user draft
-AND current Provider Conversation ref is known
+AND current Provider Conversation ref known
 ```
 
-Refresh 生命周期：
+生命周期：
 
 ```text
 READY
-↓ ContinuationDecision(REFRESH_SURFACE)
-MAINTENANCE
+↓ Decision(REFRESH_SURFACE)
+DISPATCH_PENDING / MAINTENANCE
 ↓
 Browser reload
 ↓
@@ -774,35 +881,27 @@ Adapter reattach
 ↓
 resolve Provider Conversation
 ↓
-verify last message fingerprint / expected head
+verify expected head
 ├─ match → READY
-└─ mismatch / unknown → BLOCKED_RECONCILIATION
+└─ mismatch / unknown → BLOCKED(reconciliation_required)
 ```
 
-Refresh 的核心 invariant：
+Invariant：
 
-> **Refresh 可以销毁 Browser Session，但不能改变 Logical Thread 的 current Provider Conversation。**
+> **Refresh 可以销毁 Browser Session，但不能改变 Logical Thread current Provider Conversation。**
 
 ---
 
-# 14. Controlled Rollover Contract
+# 18. Controlled Rollover Contract
 
-Rollover 不是：
-
-```text
-new chat → paste summary → hope for the best
-```
-
-也不是一个单独 browser click。
-
-它是一段 **maintenance saga**：
+Rollover 是 maintenance saga：
 
 ```text
 Current Conversation A
       ↓
-State settle
+settle latest State
       ↓
-Stateful Compaction
+final Stateful Compaction
       ↓
 Checkpoint at state vN
       ↓
@@ -810,13 +909,13 @@ Context Compiler projection
       ↓
 Create Provider Conversation B
       ↓
-Inject projection / bootstrap contract
+Inject projection / bootstrap
       ↓
 Observe & identify B
       ↓
 Attach B
       ↓
-Switch LogicalThread.current A → B
+Atomically/auditably switch LogicalThread.current A → B
       ↓
 mark A rolled_over
       ↓
@@ -826,266 +925,193 @@ READY
 关键 invariant：
 
 1. A 不删除；
-2. A 在 B 被可靠创建/识别以前仍然是 current carrier；
-3. current carrier switch 必须可审计；
-4. projection 必须来自已 Applied State / immutable evidence refs；
-5. rollover failure 不能产生“两个 current conversation”；
-6. 如果切换状态不确定，进入 reconciliation。
+2. B 被可靠创建/识别以前，A 仍是 current；
+3. v0 一个 Logical Thread 同时至多一个 current carrier；
+4. projection 来自 Applied State / immutable evidence refs；
+5. saga failure 不能产生两个 current；
+6. switch 事实不确定时进入 `BLOCKED(reconciliation_required)`。
 
-因此：
-
-> **Rollover 是 Context Boundary Reset；Refresh 是 Browser Surface Reset。**
+Rollover step-level crash recovery 留给 Execution Journal Contract。
 
 ---
 
-# 15. Page Health 与 Context Health 必须分开
+# 19. Page Health 与 Context Health
 
-两者不能合成一个“长聊分数”。
+## Page Health
 
-## 15.1 Page Health
+回答 browser surface 是否健康。
 
-回答：
+候选信号：interaction latency、long task、DOM/message growth、scroll/input delay、observer pressure、refresh 后改善幅度。
 
-> 当前 Browser Surface 是否还能健康交互？
+## Context Health
 
-候选信号：
+回答当前 Provider Conversation 是否还是好的 explicit working boundary。
 
-- interaction latency；
-- long task；
-- DOM/message growth；
-- scroll/input delay；
-- adapter observer pressure；
-- refresh 后性能改善幅度。
+候选信号：semantic phase boundary、repeated reopening、terminology drift、progress density、projection budget pressure、manual rollover request、round/message count。
 
-具体权重不在 v0 冻结。
+具体阈值/权重不在 v0 冻结，遵循：
 
-## 15.2 Context Health
-
-回答：
-
-> 当前 Provider Conversation 是否仍然是一个好的显式工作边界？
-
-候选信号：
-
-- semantic phase boundary；
-- repeated reopening；
-- terminology drift；
-- recent progress density；
-- projection budget pressure；
-- manual rollover request；
-- rounds/messages since last reset（仅 signal，不是死阈值）。
-
-## 15.3 决策示例
-
-```text
-Page degraded + Context healthy
-→ Refresh
-```
-
-```text
-Page healthy + Context pressured
-→ Compact / Rollover
-```
-
-```text
-Page degraded + Context pressured
-→ Prefer Controlled Rollover when safe
-```
+> **instrument first, optimize second.**
 
 ---
 
-# 16. Low Progress Policy：不要一重复就叫用户
+# 20. Low Progress Policy
 
-`low_progress` 不应该直接：
+`low_progress` 不直接 Human Gate。
 
-```text
-→ “请问你想怎么办？”
-```
-
-v0 推荐至少先尝试一次 focused recovery strategy：
+先至少执行 focused recovery：
 
 ```text
-不要继续扩写已有解释；
-指出剩余最关键 unknown；
+不要扩写已有解释；
+指出最关键 remaining unknown；
 尝试关闭一个具体 Open Question；
-如果无法推进，明确 blocker 属于：
+若无法推进，分类 blocker：
 - authority choice
 - missing evidence
 - scope mismatch
 - actual completion
+- control/system failure
 ```
 
 之后：
 
 - authority choice → Intervention Gate；
-- missing evidence 且工具可取得 → 继续自主；
-- scope change → gate concrete scope Proposal；
+- missing evidence 且工具可取得 → 自主取证；
+- scope mismatch → concrete scope Proposal / Gate；
 - actual completion → REQUEST_COMPLETE；
-- 无法 reconcile → BLOCKED_RECONCILIATION / explicit pause。
+- control failure → BLOCKED(control_basis_unavailable)；
+- execution ambiguity → BLOCKED(reconciliation_required)。
 
-具体“连续几轮 low progress”阈值暂不冻结，必须用真实任务 Eval 调。
+连续多少轮 low progress 才触发 recovery，不在 v0 冻结，用 Eval 调。
 
 ---
 
-# 17. Completion Contract
+# 21. Completion Contract
 
-Completion 是另一个容易被模型自我宣布的地方。
-
-v0 不接受：
+不接受：
 
 ```text
 Assistant: “已经完整了。”
-→ Thread magically completed
+→ magically completed
 ```
 
-Completion 至少分三层：
+至少：
 
 ```text
 completion_candidate
 → Completion Policy
-→ completion transition applied
+→ completion State Proposal
+→ Policy / Reducer
+→ ApplyResult
 → COMPLETED
 ```
 
-Completion Policy 可以检查：
+Completion Policy 可检查：
 
-- deliverable 是否满足；
-- blocking Open Question 是否关闭；
-- 是否存在 PendingHumanGate；
-- 是否存在 unresolved blocker/reconciliation；
-- 是否有明确 completion criteria；
+- deliverable；
+- blocking Open Questions；
+- PendingHumanGate；
+- unresolved blocker；
+- explicit completion criteria；
 - 是否需要 human confirmation。
 
-如果需要修改 Run operational status：
-
-```text
-REQUEST_COMPLETE
-→ State Proposal(set_status / completion transition)
-→ Policy
-→ Reducer
-```
-
-只有 ApplyResult 成功后，Continuation mode 才进入 COMPLETED。
+只有正式 completion transition applied 后，mode 才进入 COMPLETED。
 
 ---
 
-# 18. Control Proposal 解析失败怎么办
+# 22. 状态转换主路径
 
-Bootstrap marker 不能成为单点故障。
-
-如果：
-
-```text
-assistant response 正常
-但 Control Proposal 缺失 / JSON malformed
-```
-
-v0 不应该立刻再次发送“继续”。
-
-推荐：
-
-```text
-1. 保留完整 assistant Turn
-2. 尝试 deterministic parse / repair（仅格式层）
-3. 若仍失败，调用独立 evaluator / explicit control-recovery prompt（若配置）
-4. 仍无法建立可靠 next-action basis
-   → BLOCKED_RECONCILIATION 或 PAUSED_USER
-```
-
-> **看不懂控制状态时，不能用自动 Continue 掩盖控制协议已经失效。**
-
----
-
-# 19. 状态转换主路径
-
-## 19.1 正常自主循环
+## 22.1 正常自主循环
 
 ```text
 mode=RUNNING
 phase=READY
-↓
-ContinuationDecision(CONTINUE_FOCUSED)
-↓
-DISPATCH_PENDING
+↓ evaluate
+Durable Decision(CONTINUE_FOCUSED)
++ current_decision_id + DISPATCH_PENDING atomic local persist
 ↓ dispatch proven
 AWAITING_PROVIDER
-↓ assistant turn observed
+↓ Turn observed
 INGESTING_RESULT
 ↓
 SETTLING_STATE
-↓ no gate / state settled
+↓ settled
 READY
-↓
-next decision
 ```
 
-## 19.2 Human Gate
+## 22.2 No-action waiting
+
+```text
+AWAITING_PROVIDER
+↓ evaluate/runtime tick
+no_action
+↓
+remain AWAITING_PROVIDER
+```
+
+不创建 WAIT Decision。
+
+## 22.3 Human Gate
 
 ```text
 SETTLING_STATE / READY
 ↓ PendingHumanGate exists
-mode=PAUSED_HUMAN
-↓ user resolves gate
-Policy / State settle
+PAUSED_HUMAN
+↓ durable HumanGateResolution
+↓ Policy / Proposal / State settle
 ↓ no other gate
-mode=RUNNING (if auto-resume policy permits)
-phase=READY
+RUNNING + READY（若 auto-resume policy 允许）
 ```
 
-默认是否在 human answer 后自动 resume，应由 user/run policy 控制；不要隐藏式决定。
-
-## 19.3 User takeover
+## 22.4 Explicit User Pause
 
 ```text
 any phase
-↓ user typing / explicit pause
-mode=PAUSED_USER
+↓ explicit pause/takeover
+PAUSED_USER
 ```
 
-已有 in-flight result 可以继续 ingest，但不自动 dispatch next action。
+Transient typing 只 suppress dispatch。
 
-## 19.4 Refresh
+## 22.5 Refresh
 
 ```text
 RUNNING + READY
-↓ page degraded + safe window
-ContinuationDecision(REFRESH_SURFACE)
+↓ page degraded + context healthy + safe window
+Decision(REFRESH_SURFACE)
 ↓
-phase=MAINTENANCE
+MAINTENANCE
 ↓ reattach + head verified
-phase=READY
+READY
 ```
 
-## 19.5 Rollover
+## 22.6 Rollover
 
 ```text
 RUNNING + READY
 ↓ context pressure + safe window
-ContinuationDecision(START_ROLLOVER)
+Decision(START_ROLLOVER)
 ↓
-phase=MAINTENANCE
-↓ compaction/checkpoint/projection/new conversation
-↓ current carrier switch verified
-phase=READY
+MAINTENANCE saga
+↓ switch verified
+READY
 ```
 
-## 19.6 Reconciliation
+## 22.7 Blocked
 
 ```text
 any phase
-↓ ambiguous execution / mismatch
-mode=BLOCKED_RECONCILIATION
+↓ integrity / execution / control basis failure
+BLOCKED(reason)
 ```
 
-Recovery Contract 决定如何回到 RUNNING/READY。
+Recovery / user action / evaluator 修复后才能回 RUNNING。
 
 ---
 
-# 20. Run Policy / Autonomy Policy
+# 23. Autonomy Policy
 
-同一个 State Machine 应支持不同自动化强度，而不是把“自动”写死。
-
-v0 可以有：
+同一 State Machine 支持不同自动化强度：
 
 ```yaml
 autonomy_policy:
@@ -1093,6 +1119,7 @@ autonomy_policy:
     manual | supervised | autonomous
 
   auto_resume_after_human_gate: false
+  auto_resume_after_manual_turn: true
 
   allowed_actions:
     - CONTINUE_FOCUSED
@@ -1105,38 +1132,35 @@ autonomy_policy:
     max_wall_time:
 ```
 
-这些字段的默认数值暂不冻结。
+默认数值不冻结。
 
-语义：
-
-- `manual`：只观察/维护，不自动发下一轮工作 prompt；
-- `supervised`：可以给出 next action，用户确认后 dispatch；
-- `autonomous`：在 policy / authority 边界内自动推进。
-
-用户任何时候都可以 Pause / Resume。
+- manual：观察/维护，不自动发工作 prompt；
+- supervised：产生 Action Intent，但 dispatch 要用户确认；
+- autonomous：在 authority/policy 内自动推进。
 
 ---
 
-# 21. Continuation 与 State Delta 的明确接口
+# 24. 与 State Delta 的接口
 
-Continuation **不直接改 Run State**。
+Continuation 不直接改 Run State。
 
-它读取：
+读取：
 
 ```text
 latest Applied Run State
 AuthorizationResult(s)
 PendingHumanGate(s)
+HumanGateResolution(s)
 ApplyResult(s)
 ```
 
-需要产生新的状态变化时：
+产生 state change 时：
 
 ```text
 Continuation / Worker
-→ durable immutable State Proposal
-→ Authority Policy
-→ Reducer
+→ durable immutable Proposal
+→ Policy
+→ Reducer / State Store
 ```
 
 特别是：
@@ -1147,30 +1171,29 @@ REQUEST_COMPLETE
 ```
 
 ```text
-blocked by scope change
+scope blocker
 ≠ direct edit scope
 ```
 
 ```text
-human choice answered
-→ new Proposal based on answer
+Intervention answer
+→ durable HumanGateResolution
+→ new Proposal
 ```
 
-这样 Continuation 永远不绕过 State governance。
+State Store 必须先通过 `delta_id` idempotency 消除“已经成功但 receipt 丢失”，Continuation 才能把 `rejected_stale` 当成真正 stale。
 
 ---
 
-# 22. Continuation 与 Execution Journal 的边界
+# 25. 与 Execution Journal 的边界
 
-本文只定义：
+Continuation 定义：
 
-> “应该做什么”以及“控制器目前处于什么 mode/phase”。
+> **应该做什么，以及 Controller 当前允许什么。**
 
-Execution Journal 后续定义：
+Execution Journal 定义：
 
-> “这个 Action Intent 实际发送了吗、Provider 看到了吗、response 是哪一个、refresh/rollover 走到了哪一步、崩溃后如何 reconcile。”
-
-因此：
+> **这个 Decision 实际 dispatch 了吗、Provider/Browser side effect 是否发生、response 是哪一个、maintenance saga 到哪一步、crash 后怎么 reconcile。**
 
 ```text
 ContinuationDecision
@@ -1182,160 +1205,134 @@ Observed Runtime Event
 Continuation State transition
 ```
 
-`DISPATCH_PENDING` 与 `AWAITING_PROVIDER` 的分界，最终必须由 Journal 的事实证据驱动，而不是 UI 猜测。
+`DISPATCH_PENDING → AWAITING_PROVIDER` 必须由 Journal 中的事实驱动，而不是 UI 猜测。
 
 ---
 
-# 23. v0 必须测试的场景
+# 26. v0 必须测试的场景
 
-### A. 正常 Auto Continue
+### A. Normal Auto Continue
 
-```text
-READY
-→ CONTINUE_FOCUSED
-→ dispatch
-→ response
-→ state settle
-→ READY
-```
+READY → durable Decision → dispatch → response → settle → READY；不可 duplicate send。
 
-不能重复发送。
-
-### B. Provider 仍 generating
+### B. Same-basis Decision replay
 
 ```text
-READY evaluation sees generating
-→ WAIT
+Decision CD-42 已持久化
+process crash before caller receives it
+↓ restart
+same basis_fingerprint
+→ reuse CD-42
+→ do not create CD-43
 ```
 
-### C. 用户在 dispatch 前开始输入
+### C. Provider still generating
 
-```text
-DISPATCH_PENDING
-→ user activity
-→ PAUSED_USER
-→ suppress autonomous send
-```
+→ no_action；不创建 WAIT Decision。
 
-### D. 用户在 Provider generating 时 Pause
+### D. User typing before dispatch
 
-当前 response 可完成并 ingest，但下一轮不自动发送。
+→ transient guard suppresses autonomous dispatch；不自动永久 PAUSED_USER。
 
-### E. Concrete Proposal 需要 Human
+### E. Explicit user takeover
 
-```text
-AuthorizationResult.requires_human
-→ PendingHumanGate
-→ PAUSED_HUMAN
-```
+→ PAUSED_USER。
 
-### F. A/B 产品偏好，尚无唯一 mutation
+### F. Concrete Proposal needs Human
 
-```text
-InterventionRequest
-→ PendingHumanGate
-→ user answers
-→ new State Proposal
-```
+AuthorizationResult.requires_human → Gate → PAUSED_HUMAN。
 
-### G. 页面退化但 Context 健康
+### G. A/B preference before unique mutation
 
-```text
-→ REFRESH_SURFACE
-→ reattach
-→ head match
-→ READY
-```
+InterventionRequest → Gate → durable HumanGateResolution → new Proposal。
 
-### H. Refresh 后 head mismatch
+### H. Crash after user answer before Proposal generation
 
-```text
-→ BLOCKED_RECONCILIATION
-```
+HumanGateResolution 仍存在，可恢复生成 Proposal；不能要求用户重新回答。
 
-### I. Context pressure
+### I. Page degraded + Context healthy
 
-```text
-→ COMPACT_CONTEXT / START_ROLLOVER
-```
+→ REFRESH_SURFACE。
 
-### J. Rollover 创建 B 失败
+### J. Page degraded + Context pressured
+
+→ START_ROLLOVER when safe；不能因固定 priority 先做无意义 Refresh。
+
+### K. Completion candidate + Page degraded
+
+→ completion governance first；不先为了性能维护而刷新已接近完成的 Thread。
+
+### L. Refresh head mismatch
+
+→ BLOCKED(reconciliation_required)。
+
+### M. Control Proposal malformed but execution facts consistent
+
+→ fallback evaluator；失败则 BLOCKED(control_basis_unavailable)，不是 reconciliation。
+
+### N. Rollover B creation fails
 
 A 保持 current；不能出现两个 current carrier。
 
-### K. Rollover B 创建成功但 switch 状态不确定
+### O. Low progress
 
-```text
-→ BLOCKED_RECONCILIATION
-```
+focused recovery before Human Gate。
 
-### L. Low progress
+### P. Local State Delta replay
 
-先 focused recovery，不立即打扰用户。
+State Store 返回原 ApplyResult；Continuation 不把它误判为 stale/reconciliation。
 
-### M. Candidate complete
+### Q. User/dispatch race
 
-```text
-REQUEST_COMPLETE
-→ State Proposal / Policy / Reducer
-→ applied
-→ COMPLETED
-```
-
-### N. Control Proposal malformed
-
-不自动裸 Continue；进入 control recovery / reconciliation。
-
-### O. Crash at DISPATCH_PENDING
-
-Continuation 不自行重发。等待 Execution Journal 判断 external side effect 是否已发生。
+若无法证明 autonomous prompt 是否已经发出 → BLOCKED(reconciliation_required)。
 
 ---
 
-# 24. 当前冻结结论
+# 27. 当前冻结候选结论
 
 1. **Continuation Controller 以 Logical Thread 为控制单元。**
-2. **Control Mode 与 Execution Phase 正交，避免状态爆炸。**
-3. **ContinuationDecision 必须 durable；Decision ≠ Execution Fact。**
-4. **Provider in-flight 时绝不再自主发送第二条消息。**
-5. **用户操作拥有最高 preemption priority。**
-6. **Continuation 基于 settled/applied state 决策，不直接读一句自然语言就继续。**
-7. **Human Gate 有两种 origin：State authorization approval 与 pre-state InterventionRequest。**
-8. **Continuation 不直接修改 Run State；所有 state mutation 继续走 Proposal → Policy → Reducer。**
-9. **Refresh 只重建 Browser Surface；Rollover 重建显式 Context Boundary。**
-10. **Safe Refresh / Rollover 必须等待 safe window。**
-11. **Rollover 是 maintenance saga，不是一个 browser click。**
-12. **Page Health 与 Context Health 分开。**
-13. **Low Progress 先自主 focused recovery，不直接 Human Gate。**
-14. **Completion 必须经过 Completion Policy / State transition，不接受模型自我宣布。**
-15. **执行历史不确定时进入 reconciliation，不通过重复发送猜测。**
-16. **Execution Journal 负责“实际发生了什么”，Continuation 负责“下一步应该做什么”。**
+2. **Control Mode 与 Execution Phase 正交。**
+3. **Transient user activity 是 runtime guard；只有 explicit pause/takeover 才进入 durable PAUSED_USER。**
+4. **ContinuationDecision durable + immutable，并按 basis_fingerprint 幂等创建。**
+5. **同一 Logical Thread / 同一 basis 至多一个有效 Decision。**
+6. **Decision 创建与 current_decision_id / DISPATCH_PENDING 需要 local crash consistency。**
+7. **WAIT 是 no-action outcome，不创建 durable Decision。**
+8. **Provider in-flight 时绝不自主发送第二条消息。**
+9. **Human Gate 有 Authorization 与 Intervention 两类 origin。**
+10. **HumanGateResolution durable，用户答案不能在 crash 中丢失。**
+11. **Continuation 不直接改 Run State，所有 mutation 继续走 Proposal → Policy → Reducer。**
+12. **COMPACT_CONTEXT 与 START_ROLLOVER 不隐式串联；Rollover saga 自带必要 final compaction/checkpoint。**
+13. **Page Health × Context Health 联合决策，而不是两个互相打架的顺序优先级。**
+14. **Completion candidate 优先于非必要 Refresh/Rollover。**
+15. **Control Proposal 失败与 execution reconciliation 是不同 blocker。**
+16. **Low Progress 先 focused recovery，不直接 Human Gate。**
+17. **State Store local apply idempotency 在 Continuation 之前消除 replay ambiguity。**
+18. **Execution Journal 负责“实际发生什么”，Continuation 负责“下一步应该做什么”。**
 
 ---
 
-# 25. 下一步接口
+# 28. 下一步接口 Review
 
-下一篇应当进入：
+本文继续保持 **Design Candidate v0.1**。
 
-> **Execution Journal & Recovery Contract v0**
+下一步不直接进入 Recovery Contract，而先做一次：
 
-重点不是再扩 Continuation action，而是钉死：
+> **Runtime Object Model × State Delta × Continuation 三篇接口对审。**
+
+重点只审新出现/被强化的接口：
 
 ```text
+InterventionRequest
+HumanGateResolution
+ContinuationState
 ContinuationDecision
-→ planned execution
-→ provider/browser side effect
-→ observation
-→ reconciliation
-→ idempotent recovery
+basis_fingerprint / single active decision
+user-preemption guard
+State Apply idempotency → true stale
 ```
 
-尤其要解决：
+对审通过后，再决定：
 
-- send 到底有没有发生；
-- refresh 前后如何对齐；
-- rollover saga 每一步如何恢复；
-- browser crash 后怎样避免 duplicate Continue；
-- 用户与自动化同时操作时如何确定最终事实。
-
-在写 Recovery Contract 前，本文继续保持 **Design Candidate v0**；应先与 Object Model / State Delta 做一次接口对审。
+1. 哪些对象需要提升进 Runtime Object Baseline；
+2. Continuation 是否可以升 Design Baseline；
+3. 然后进入 Execution Journal & Recovery Contract v0。
