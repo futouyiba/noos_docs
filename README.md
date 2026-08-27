@@ -14,7 +14,7 @@
 - [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md) — **Design Baseline v0.2**
 - [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Baseline v0.1**
 - [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Baseline v0.1**
-- [Continuation State Machine v0](docs/harness/continuation-state-machine.md) — **Design Candidate v0**
+- [Continuation State Machine v0](docs/harness/continuation-state-machine.md) — **Design Candidate v0.1**
 
 ### Branding
 
@@ -37,7 +37,7 @@ Harness 当前最关键的控制原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-当前状态/证据/执行语义：
+当前关键语义：
 
 ```text
 Canonical Source
@@ -46,17 +46,17 @@ Canonical Source
 Committed State
 → Run 内正式提交的约束、决策与 rejection
 
-SourceRef
-→ 观察了什么、哪个版本、何时观察
-
-EvidenceRef
-→ Source observation 中用于某类 Claim 的证据与 authority role
+SourceRef / EvidenceRef
+→ immutable observation 与 claim-level evidence semantics
 
 Proposal
 → durable + immutable 的最小逻辑状态事务请求
 
+State Apply
+→ delta_id 幂等；State + ApplyResult + Transition Record crash-consistent commit
+
 ContinuationDecision
-→ durable 的“下一步应该做什么”
+→ durable + immutable + basis-fingerprint-idempotent 的“下一步应该做什么”
 
 Execution Journal（下一层）
 → “这个决定后来实际发生了什么”
@@ -66,15 +66,15 @@ Execution Journal（下一层）
 
 1. **Runtime Object Model & Authority Model v0** — **Baseline v0.1**
 2. **State Delta + Reducer Contract v0** — **Baseline v0.1**
-3. **Continuation State Machine v0** — **Candidate v0；当前进入接口对审**
-4. **Execution Journal & Recovery Contract v0** — Continuation 对审通过后进入
+3. **Continuation State Machine v0** — **Candidate v0.1；当前进入三篇接口对审**
+4. **Execution Journal & Recovery Contract v0** — 对审通过后进入
 
 当前 Continuation 核心模型：
 
 ```text
 Control Mode
   RUNNING / PAUSED_USER / PAUSED_HUMAN /
-  BLOCKED_RECONCILIATION / COMPLETED
+  BLOCKED / COMPLETED
 
 +
 
@@ -83,24 +83,38 @@ Execution Phase
   INGESTING_RESULT / SETTLING_STATE / MAINTENANCE
 ```
 
-并且：
+几个重要边界：
 
 ```text
+Transient user typing
+→ runtime dispatch guard，不等于 durable PAUSED_USER
+
+WAIT
+→ no_action，不制造 durable Decision
+
+Page Health × Context Health
+→ 联合决定 Refresh / Compaction / Rollover
+
+Completion candidate
+→ 优先进入 completion governance，而不是先做非必要维护
+```
+
+Continuation Candidate 还提出需要与 Baseline 对审的对象：
+
+```text
+InterventionRequest
+HumanGateResolution
+ContinuationState
 ContinuationDecision
-→ Execution / Journal
-→ observed runtime fact
-→ next Continuation transition
 ```
 
-Continuation Candidate 还提出一个需要和 Baseline 对审的最小泛化：
+其中 Human Gate 允许两种 origin：
 
 ```text
-PendingHumanGate origin
-├─ AuthorizationResult     # 已有 concrete State Proposal，只差 human authority
-└─ InterventionRequest     # 先需要 A/B choice / requirement input，尚无唯一 State mutation
+PendingHumanGate
+├─ AuthorizationResult     # concrete State Proposal 只差 human authority
+└─ InterventionRequest     # 先需要选择/输入，尚无唯一 State mutation
 ```
-
-Baseline 文档暂不因 Candidate 单方面改写；待接口对审后再决定是否吸收。
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
 
