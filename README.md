@@ -12,8 +12,8 @@
 ### Harness
 
 - [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md) — **Design Baseline v0.2**
-- [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Candidate v0**
-- [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Candidate v0**
+- [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Baseline v0.1**
+- [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Baseline v0.1**
 
 ### Branding
 
@@ -22,8 +22,6 @@
 ## 当前核心判断
 
 > **NOOS 持有工作的连续性、任务状态和显式工作上下文；Chatbot 负责阶段性推理。Provider Conversation 可以替换，Browser Session 可以销毁，而 Run 始终连续。**
-
-当前把 NOOS 看成两个平面：
 
 ```text
 NOOS
@@ -51,16 +49,29 @@ SourceRef
 → 观察了什么、哪个版本、何时观察
 
 EvidenceRef
-→ SourceRef 对某个 Claim 提供什么证据、具有什么 authority role
+→ Source observation 中用于某类 Claim 的证据与 authority role
+
+Proposal
+→ durable + immutable 的最小逻辑状态事务请求
 ```
 
 ## 当前底层 Contract 顺序
 
-1. **Runtime Object Model & Authority Model v0** — Candidate；已完成 Source/Evidence 与 Human Gate ownership 收敛
-2. **State Delta + Reducer Contract v0** — Candidate；已完成 Proposal / Authorization / Atomicity / Human Gate P0 收敛
-3. **Object Model × State Delta 接口对审** — **当前下一步**
-4. **Continuation State Machine v0** — 对审通过后进入
-5. **Execution Journal & Recovery Contract v0**
+1. **Runtime Object Model & Authority Model v0** — **Baseline v0.1**
+2. **State Delta + Reducer Contract v0** — **Baseline v0.1**
+3. **Continuation State Machine v0** — **当前下一步**
+4. **Execution Journal & Recovery Contract v0**
+
+接口已经冻结为：
+
+```text
+Durable Immutable Proposal
+→ Policy
+→ Durable AuthorizationResult
+→ Authorized Delta
+→ staged Reducer
+→ atomic State commit + ApplyResult
+```
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
 
