@@ -11,9 +11,9 @@
 
 ### Harness
 
-- [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md)
-- [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md)
-- [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md)
+- [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md) — **Design Baseline v0.2**
+- [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Candidate v0**
+- [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Candidate v0**
 
 ### Branding
 
@@ -38,22 +38,29 @@ Harness 当前最关键的控制原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-语义上进一步区分：
+当前状态/证据语义：
 
 ```text
 Canonical Source
-→ 决定外部事实的 epistemic authority
+→ 外部事实的 epistemic authority
 
 Committed State
-→ 表示 Run 内已正式提交的约束、决策与 rejection
+→ Run 内正式提交的约束、决策与 rejection
+
+SourceRef
+→ 观察了什么、哪个版本、何时观察
+
+EvidenceRef
+→ SourceRef 对某个 Claim 提供什么证据、具有什么 authority role
 ```
 
 ## 当前底层 Contract 顺序
 
-1. **Runtime Object Model & Authority Model v0** — Design Candidate
-2. **State Delta + Reducer Contract v0** — Design Candidate
-3. **Continuation State Machine v0** — 下一步
-4. **Execution Journal & Recovery Contract v0**
+1. **Runtime Object Model & Authority Model v0** — Candidate；已完成 Source/Evidence 与 Human Gate ownership 收敛
+2. **State Delta + Reducer Contract v0** — Candidate；已完成 Proposal / Authorization / Atomicity / Human Gate P0 收敛
+3. **Object Model × State Delta 接口对审** — **当前下一步**
+4. **Continuation State Machine v0** — 对审通过后进入
+5. **Execution Journal & Recovery Contract v0**
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
 
