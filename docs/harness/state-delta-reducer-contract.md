@@ -3,7 +3,7 @@
 > **状态**：Design Candidate v0  
 > **日期**：2026-08-27  
 > **上位文档**：[Runtime Object Model & Authority Model v0](runtime-object-authority-model.md)  
-> **目标**：定义 Proposal 如何在 Authority Policy 控制下，安全、可追溯、可并发检测地变成 Run State 变更。
+> **目标**：定义 Proposal 如何经过 durable Authorization，在事务边界内安全、可追溯、可并发检测地变成 Run State 变更。
 
 ---
 
@@ -11,29 +11,36 @@
 
 Harness 不能让 LLM 每隔几轮“重写一份最新 State”。
 
-真正需要的是：
+v0 的状态变化管线冻结为：
 
 ```text
 Current State vN
       +
-Proposal Delta
+Atomic Proposal
       ↓
 Authority / Promotion Policy
       ↓
-Authorized Delta
-      ↓
-Reducer
-      ↓
-State vN+1
-      +
-Audit Record
+Durable AuthorizationResult
+      ├─ requires_human → PendingHumanGate
+      ├─ denied
+      └─ authorized
+             ↓
+       Authorized Delta
+             ↓
+           Reducer
+             ↓
+        State vN+1
+             +
+         ApplyResult
+             +
+         Audit Record
 ```
 
 核心原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-这篇 Contract 只解决“状态怎么安全变化”。它不负责决定下一步是否 Continue / Refresh / Rollover，也不负责 Provider dispatch/recovery。
+本文只解决“状态怎么安全变化”。它不决定下一步是否 Continue / Refresh / Rollover，也不负责 Provider dispatch / crash recovery。
 
 ---
 
@@ -51,54 +58,90 @@ Audit Record
 
 1. **静默遗忘**：旧 Decision / Constraint 被总结掉；
 2. **静默改义**：旧结论被更流畅的新措辞悄悄改变；
-3. **权限越界**：Hypothesis 被模型自己升级成 Confirmed Decision；
+3. **权限越界**：Hypothesis 被模型自己升级成 Committed Decision；
 4. **并发覆盖**：Reviewer 基于 v17 的结果覆盖 Main 已推进到 v20 的状态。
 
-因此 v0 采用 operation-based Delta，而不是 whole-state replacement。
+因此 v0 使用 **operation-based Delta**，而不是 whole-state replacement。
 
 ---
 
-# 2. Contract 中的三个不同对象
+# 2. Contract 中的四个主要对象
 
 ## 2.1 Proposal
 
-Proposal 是 Worker / Reviewer / User / Source Observer 提出的**候选变更请求**。
-
-它可以包含调用方没有 authority 执行的操作。
+Proposal 是 Worker / Reviewer / User / Source Observer 提出的**候选状态事务请求**。
 
 ```yaml
 proposal:
   proposal_id: P-000123
   run_id: run-abc
   base_state_version: 17
+
   proposer:
     kind: agent
     ref: main-thread-worker
+
   operations: []
   created_at: 2026-08-27T10:00:00+08:00
 ```
 
-Proposal 不代表 State 已改变。
+Proposal 不代表 State 已改变，也不代表 proposer 拥有执行这些 operation 的 authority。
 
-## 2.2 Authorized Delta
+最重要的语义是：
 
-Authority / Promotion Policy 对 Proposal 逐项判断后，产生 Authorized Delta。
+> **Proposal 本身就是“请求”；Operation 描述期望发生的最终 State Transition。**
+
+因此 v0 不再使用 `propose_decision`、`propose_scope_change` 这类二次“提议操作”。
+
+Agent 完全可以提交：
+
+```yaml
+operations:
+  - op: commit_decision
+```
+
+这只表示“请求 committed state 出现这个 decision”，并不表示 Agent 有权 commit。Authority Policy 决定它是否成立。
+
+## 2.2 AuthorizationResult
+
+Policy 对**整个 Proposal 事务**给出 durable 结果：
+
+```yaml
+authorization_result:
+  authorization_result_id: AZ-000087
+  proposal_id: P-000123
+  run_id: run-abc
+  base_state_version: 17
+
+  status: authorized | requires_human | denied
+  authority_basis:
+  gate_id:
+  reason:
+  created_at:
+  supersedes_authorization_result_id:
+```
+
+AuthorizationResult 必须持久化。它是 Policy 的正式输出，不是临时函数返回值。
+
+## 2.3 Authorized Delta
+
+只有 `AuthorizationResult.status = authorized` 时，Policy 才产生 Authorized Delta：
 
 ```yaml
 authorized_delta:
   delta_id: SD-000087
   proposal_id: P-000123
+  authorization_result_id: AZ-000087
   run_id: run-abc
   base_state_version: 17
   operations: []
-  authorization_record: []
 ```
 
-只有 Authorized Delta 才能送入 Reducer。
+Authorized Delta 在 v0 中与 Proposal 具有相同事务边界，不允许 Policy 从一个 Proposal 中只摘取部分 operation 继续执行。
 
-## 2.3 Apply Result
+## 2.4 ApplyResult
 
-Reducer 处理后返回：
+Reducer 处理 Authorized Delta 后返回：
 
 ```yaml
 apply_result:
@@ -120,11 +163,51 @@ rejected_invariant
 no_op
 ```
 
-v0 不做“部分成功”。见第 10 节原子性。
+ApplyResult 不创建 Human Gate。Human Gate 属于 Policy / Authorization 边界。
 
 ---
 
-# 3. State 分区与写权限
+# 3. Proposal 是 v0 最小逻辑事务单元
+
+这是 v0 的关键 invariant。
+
+例如一个逻辑变化：
+
+```text
+commit D-023
++
+close Q-014 using D-023
++
+move frontier to Q-015
+```
+
+应该形成**一个 Proposal**。
+
+而两个相互独立的变化：
+
+```text
+add hypothesis H-9
+```
+
+和：
+
+```text
+request a product decision requiring human authority
+```
+
+应该形成**两个 Proposal**。
+
+因此 v0 不引入 `atomic_group` / dependency graph / partial authorization。
+
+原则是：
+
+> **Proposal atomicity → Authorization atomicity → Reducer atomicity。**
+
+这使三层事务语义一致。
+
+---
+
+# 4. State 分区与写权限
 
 基于 Runtime Object Model：
 
@@ -137,21 +220,13 @@ run_state:
   meta:
 ```
 
-不同分区不是同等权限。
+## 4.1 Operational
 
-## 3.1 Operational
+例如：goal、deliverable、scope、phase、status。
 
-例如：
+`scope` / `goal` 通常需要更高 authority；`phase` 可以由 delegated policy 自动推进。
 
-- goal；
-- deliverable；
-- scope；
-- phase；
-- status。
-
-其中 `scope` / `goal` 通常需要更高 authority；`phase` 可被 delegated policy 自动推进。
-
-## 3.2 Committed
+## 4.2 Committed
 
 ```yaml
 committed:
@@ -162,9 +237,9 @@ committed:
 
 这些是 Run 内正式提交的治理状态。
 
-任何新增、supersede、reopen 都必须经过 Promotion / Authority Policy。
+任何新增、supersede、reopen 都必须经过 Authority / Promotion Policy。
 
-## 3.3 Working
+## 4.3 Working
 
 ```yaml
 working:
@@ -175,28 +250,29 @@ working:
   review_issues: []
 ```
 
-Working State 可以给 agent 更大 delegated authority，但仍必须满足 provenance / version / invariant。
+Working State 可以给 agent 更大的 delegated authority，但仍必须满足 provenance / version / invariant。
 
-## 3.4 Sources
+## 4.4 Sources
 
-Source Ref 是引用对象，不是把外部事实永久复制为 Truth。
-
-新增 source 时应使用上位文档的正交维度：
+Run State 只保存 SourceRef / EvidenceRef 的引用关系：
 
 ```yaml
-origin_kind:
-authority_role:
-temporal_status:
-claim_kind:
+sources:
+  source_ref_ids: []
+  evidence_ref_ids: []
 ```
+
+`SourceRef` 表示“观察了什么”；`EvidenceRef` 表示“这个 Source observation 对哪个 Claim 起什么证据作用”。
+
+详见上位 Object / Authority Model。
 
 ---
 
-# 4. Operation Taxonomy v0
+# 5. Operation Taxonomy v0
 
-v0 不追求通用 JSON Patch。我们需要的是带领域语义的 operation。
+v0 不追求通用 JSON Patch。Operation 必须带领域语义。
 
-## 4.1 Working State operations
+## 5.1 Working State operations
 
 ```text
 add_hypothesis
@@ -214,14 +290,12 @@ add_review_issue
 resolve_review_issue
 ```
 
-## 4.2 Committed State operations
+## 5.2 Committed State operations
 
 ```text
-propose_constraint
 commit_constraint
 supersede_constraint
 
-propose_decision
 commit_decision
 supersede_decision
 reopen_decision
@@ -230,30 +304,48 @@ commit_rejection
 reopen_rejection
 ```
 
-注意：Worker 通常只能产生 `propose_*`，能否转成 `commit_*` 由 Policy 决定。
+这些 operation 在 Proposal 中出现，只表示“请求该最终 transition”。
 
-## 4.3 Operational operations
+例如 Agent 提交 `commit_decision` 后，Policy 可能返回：
+
+```text
+requires_human
+```
+
+而不是让 Reducer直接执行。
+
+## 5.3 Operational operations
 
 ```text
 set_phase
 set_status
-propose_scope_change
 commit_scope_change
-propose_goal_change
 commit_goal_change
 ```
 
-## 4.4 Source operations
+同样，`commit_scope_change` 是 desired transition，不代表 proposer 拥有 scope authority。
+
+## 5.4 Source / Evidence operations
+
+v0 只允许显式增加 immutable observation 与 evidence relationship：
 
 ```text
 attach_source_ref
-update_source_observation
-mark_source_stale
+attach_evidence_ref
+record_source_supersession
 ```
 
-## 4.5 不允许的通用操作
+不提供：
 
-v0 明确不提供：
+```text
+update_source_observation
+```
+
+因为已经被 provenance 引用的 observation identity 不允许原地改写。
+
+`mark_source_stale` 若未来需要，可以作为 freshness/index 层的派生状态，不应通过修改历史 SourceRef 内容身份实现。
+
+## 5.5 明确禁止的通用操作
 
 ```text
 delete_anything
@@ -262,13 +354,13 @@ set_arbitrary_path
 raw_json_patch
 ```
 
-因为这些操作绕过语义 invariant，容易重新制造“模型重写整个状态”的风险。
+它们会绕过语义 invariant，重新制造“模型重写整个 State”的风险。
 
 ---
 
-# 5. Operation Envelope
+# 6. Operation Envelope
 
-每个 operation 都应有统一 envelope：
+每个 operation 使用统一 envelope：
 
 ```yaml
 op_id: OP-001
@@ -286,7 +378,7 @@ preconditions:
 
 provenance:
   turn_refs: []
-  source_refs: []
+  evidence_ref_ids: []
   review_issue_refs: []
 
 reason:
@@ -294,22 +386,20 @@ reason:
     D-023 已回答该问题。
 ```
 
-并非所有 operation 都要求所有 provenance 类型，但 Committed State 变更必须至少有一个可追溯依据。
+Committed State 变更必须至少有一个可追溯依据。
 
 ---
 
-# 6. Provenance Contract
+# 7. Provenance Contract
 
-## 6.1 Provenance 的目的
+Provenance 的目的不是复制全部聊天，而是回答：
 
-不是为了“把所有聊天都复制进 State”，而是能回答：
-
-- 这个 Decision 从哪里来的？
+- 这个 Decision 从哪里来？
 - 为什么 Q-014 被关闭？
 - Reviewer 基于哪个 snapshot 提出 blocker？
-- 这个事实 claim 依据哪个 source/version？
+- 这个 factual claim 依据哪个 source observation？
 
-## 6.2 Turn provenance
+## 7.1 Turn provenance
 
 ```yaml
 turn_ref:
@@ -319,26 +409,27 @@ turn_ref:
   observed_at:
 ```
 
-## 6.3 Source provenance
+## 7.2 Source / Evidence provenance
+
+事实性 Claim 优先引用 EvidenceRef：
 
 ```yaml
-source_ref_id:
-claim_excerpt_fingerprint:
-observed_at:
+evidence_ref_id: E-009
 ```
 
-Source Ref 自身包含：
+EvidenceRef 再指向 immutable SourceRef：
 
-```yaml
-origin_kind:
-authority_role:
-temporal_status:
-claim_kind:
-version:
-freshness:
+```text
+Claim / State Entity
+      ↓
+EvidenceRef
+      ↓
+SourceRef observation
 ```
 
-## 6.4 Review provenance
+因此历史 provenance 不会因为“重新观察同一文档/代码”而改变。
+
+## 7.3 Review provenance
 
 ```yaml
 review_issue_ref:
@@ -346,11 +437,40 @@ review_snapshot_id:
 base_state_version:
 ```
 
-如果 Review Snapshot 已 stale，Policy 可拒绝或要求 rebase，不应由 Reducer猜测。
+若 Review Snapshot 已 stale，Policy 可拒绝或要求重新生成 Proposal；Reducer 不猜测如何 rebase。
 
 ---
 
-# 7. Authority / Promotion Policy 如何作用到 Delta
+# 8. Source observation immutability
+
+一旦 SourceRef 被 EvidenceRef / Decision provenance 引用，它的内容身份字段不可原地覆盖。
+
+例如：
+
+```text
+S-004 = Git commit A, observed_at T1, fingerprint F1
+```
+
+后来 Git 已到 commit B：
+
+```text
+创建 S-011 = Git commit B, observed_at T2, fingerprint F2
+S-011.supersedes_source_ref_id = S-004
+```
+
+而不是把 S-004 从 A 改成 B。
+
+这样：
+
+```text
+D-017 → E-003 → S-004
+```
+
+永远表达“D-017 当时基于什么证据形成”。
+
+---
+
+# 9. Authority / Promotion Policy
 
 Reducer 不负责判断“谁说了算”。
 
@@ -361,68 +481,141 @@ proposal:
 current_state:
 authority_policy:
 proposer_identity:
-source_metadata:
+evidence_metadata:
 ```
 
-输出是每个 operation 的 authorization decision：
+Policy 可以在内部逐 operation 检查权限与条件，但 **v0 的正式输出是 Proposal-level AuthorizationResult**。
 
-```yaml
-authorization_record:
-  - op_id: OP-001
-    decision: authorized
-    authority_basis: delegated_agent_working_state
+## 9.1 事务级 Authorization 归并规则
 
-  - op_id: OP-002
-    decision: requires_human
-    authority_basis: product_choice
+若内部检查结果存在：
 
-  - op_id: OP-003
-    decision: denied
-    authority_basis: stale_review_snapshot
+```text
+任一 denied
 ```
 
-## 7.1 v0 的推荐 delegated authority
+→ 整个 Proposal：
 
-Agent 默认可：
+```text
+status = denied
+```
+
+否则若存在：
+
+```text
+任一 requires_human
+```
+
+→ 整个 Proposal：
+
+```text
+status = requires_human
+```
+
+只有全部 operation 都可授权：
+
+```text
+status = authorized
+```
+
+→ 才生成 Authorized Delta。
+
+Policy 可以在 AuthorizationResult 中保留 operation-level diagnostic，用于解释“是哪一项导致整笔事务被 gate/deny”，但不能把其余 operation 偷偷拆出去执行。
+
+## 9.2 v0 推荐 delegated authority
+
+Agent 默认可请求并通常自动获得：
 
 ```text
 add/update hypothesis
 open exploratory question
 set frontier
-attach evidence/source ref
+attach source/evidence ref
 update working set
 ```
 
-Agent 默认不可自行：
+Agent 默认不能自动获得：
 
 ```text
 change goal/scope
 supersede committed decision
 revive rejected approach without reopen path
-perform external irreversible write
+external irreversible write
 ```
 
-`close_question` 是否可 delegated 取决于 question 类型：纯 exploratory question 可允许；涉及 product choice / scope / committed decision 的问题应 Human Gate。
+`close_question` 是否 delegated 取决于 question 类型：纯 exploratory question 可允许；涉及 product choice / scope / committed decision 的问题应 gate。
 
-## 7.2 Claim kind 影响 Source Authority
+## 9.3 Claim 类型影响 Authority
 
-Policy 处理事实 claim 时必须先判断 claim kind：
-
-- `preference / constraint / decision`：用户明确表达通常高于 agent inference；
-- `fact`：应看领域 canonical/current source，而不是固定 `user > document`；
-- `inference`：必须保持为 inference/hypothesis，除非走 promotion。
+- `preference / constraint / decision`：用户或被授权 owner 的明确表达通常高于 agent inference；
+- `fact`：依据对应领域 canonical/current EvidenceRef，而不是固定 `user > document`；
+- `inference`：默认保持 working hypothesis，除非走 promotion。
 
 ---
 
-# 8. Versioning 与 Optimistic Concurrency
+# 10. Human Gate 的 durable ownership
 
-每个 Proposal / Delta 都必须携带：
+`requires_human` 发生在 Policy 阶段，不属于 Reducer ApplyResult。
+
+Policy 必须持久化：
+
+```yaml
+authorization_result:
+  authorization_result_id: AZ-000088
+  proposal_id: P-000123
+  status: requires_human
+  gate_id: HG-004
+  authority_basis: product_choice
+  reason:
+  created_at:
+```
+
+以及：
+
+```yaml
+pending_human_gate:
+  gate_id: HG-004
+  run_id: run-abc
+  proposal_id: P-000123
+  authorization_result_id: AZ-000088
+  gate_kind: product_choice
+  prompt:
+  status: pending | approved | rejected | cancelled
+  created_at:
+  resolved_at:
+```
+
+这样即使 Browser / Hub 在用户回答前崩溃，Run 仍知道有一个未解决的 authority boundary。
+
+## 10.1 Human approval 后如何继续
+
+v0 推荐保留 audit trail：
+
+```text
+AZ-000088 = requires_human
+HG-004 = approved
+        ↓
+Policy re-evaluates original Proposal
+        ↓
+AZ-000091 = authorized
+supersedes AZ-000088
+        ↓
+Authorized Delta
+```
+
+不要把旧 AuthorizationResult 原地改成 authorized。
+
+---
+
+# 11. Versioning 与 Optimistic Concurrency
+
+每个 Proposal / Authorized Delta 都携带：
 
 ```yaml
 base_state_version: N
 ```
 
-Reducer 应只在：
+Reducer 只在：
 
 ```text
 current_state.version == base_state_version
@@ -430,34 +623,28 @@ current_state.version == base_state_version
 
 时直接 apply。
 
-否则返回：
+否则：
 
 ```text
 rejected_stale
 ```
 
-或者交给上层做显式 rebase。
-
 v0 **不允许 Reducer 自动 merge stale delta**。
 
-原因是：
+上层可以：
 
-- 同时修改 frontier 可能冲突；
-- question 状态可能已经变化；
-- reviewer issue 可能已被主线程解决；
-- committed decision 可能已被 supersede。
-
-自动 merge 应作为后续独立能力，不进入 v0。
+- 重新生成 Proposal；
+- 重新 review；
+- 让 Policy/Orchestrator显式 rebase；
+- 请求人处理。
 
 ---
 
-# 9. Preconditions
+# 12. Preconditions
 
-`base_state_version` 只能防整体 stale，不能表达 operation 的局部语义前提。
+`base_state_version` 防整体 stale；operation precondition 表达局部语义前提。
 
-所以 operation 可以声明 preconditions。
-
-v0 建议支持少量确定性类型：
+v0 支持少量确定性类型：
 
 ```text
 target_exists
@@ -477,17 +664,23 @@ op: reopen_decision
 preconditions:
   - kind: committed_decision_active
     target_id: D-017
-  - kind: reopen_condition_satisfied
-    evidence_ref: E-009
 ```
 
-其中 `reopen_condition_satisfied` 若需要语义判断，应在 Policy 阶段得到授权结论；Reducer 只验证授权结果与结构前提。
+如果“reopen condition 是否真的满足”需要语义判断，应在 Policy 阶段完成；Reducer 只验证结构性前提和已授权 transaction。
 
 ---
 
-# 10. 原子性：v0 采用 All-or-Nothing
+# 13. Atomicity：三层一致
 
-一个 Authorized Delta 中如果有多个 operation：
+v0 冻结：
+
+```text
+Proposal atomic
+Authorization atomic
+Reducer apply atomic
+```
+
+一个 Proposal：
 
 ```text
 OP1
@@ -495,35 +688,33 @@ OP2
 OP3
 ```
 
-v0 默认事务语义：
-
-> **任何一个 operation 失败，整个 Delta 不修改 State。**
-
-原因：
-
-一个逻辑变更经常跨多个对象，例如：
+只可能出现：
 
 ```text
-commit D-023
-+
-close Q-014 using D-023
-+
-move frontier to Q-015
+整个 denied
+整个 requires_human
+整个 authorized → 整个 apply/no-op/reject
 ```
 
-若只成功一半，State 会进入难以理解的中间态。
+不会出现：
 
-未来若性能或大批量 source ingest 需要 partial apply，可单独定义 batch contract；不要污染核心 State Delta。
+```text
+OP1 等人
+OP2 先写 State
+OP3 被拒绝
+```
+
+若调用方有独立 mutation，调用方负责拆成多个 Proposal。
+
+未来若需要复杂 batch，再独立引入 `atomic_group` / dependency contract；v0 不做。
 
 ---
 
-# 11. Reducer Invariants v0
+# 14. Reducer Invariants v0
 
 Reducer 必须是确定性、无模型推理的状态转换器。
 
-至少维护以下 invariant。
-
-## 11.1 不允许静默删除 Committed State
+## 14.1 不允许静默删除 Committed State
 
 Committed Decision / Constraint / Rejection 不能直接消失。
 
@@ -534,67 +725,68 @@ active → superseded
 active → reopened
 ```
 
-并保留历史记录与 provenance。
+并保留历史与 provenance。
 
-## 11.2 Rejected 不允许直接复活
+## 14.2 Rejected 不允许直接复活
 
 必须通过 `reopen_rejection`，并引用 reopen reason/evidence。
 
-## 11.3 Working ≠ Committed
+## 14.3 Working ≠ Committed
 
 `add_hypothesis` 不能产生 committed decision。
 
-必须存在显式 promotion operation。
+若需要把 Hypothesis 提升为 Decision，Proposal 使用显式 `commit_decision` 并引用 hypothesis/provenance，Policy 决定是否授权。
 
-## 11.4 ID 唯一
+## 14.4 ID 唯一
 
 所有一等 State entity ID 在 Run 内必须唯一。
 
-## 11.5 引用完整
+## 14.5 引用完整
 
-`close_question.resolution_ref` 必须指向存在且合法的 resolution entity。
+例如 `close_question.resolution_ref` 必须指向存在且合法的 resolution entity。
 
-## 11.6 Scope/Goal 不能被低权限 operation 绕过
+## 14.6 Scope / Goal 不能被通用字段写入绕过
 
-不存在通用 `set_field` 路径可以修改 scope/goal。
+不存在 `set_field` 路径可以绕过 `commit_scope_change` / `commit_goal_change` 与 Policy。
 
-## 11.7 Source claim 不能伪装成永真事实
+## 14.7 Evidence provenance 不可被 observation overwrite
 
-事实性 committed claim 若依赖可变 source，应保留 Source Ref / observation provenance；Source stale 不一定自动撤销 Decision，但必须允许上层识别事实依据已过期。
+Committed factual claim 若引用 EvidenceRef → SourceRef，重新观察 source 不能修改旧 SourceRef 的内容身份。
 
-## 11.8 Version 单调递增
+## 14.8 Version 单调递增
 
-成功 apply：
+至少一项实际 mutation 成功时：
 
 ```text
 vN → vN+1
 ```
 
-失败/no-op 不产生虚假的 State version。
+失败或全部 no-op 不产生新 State version。
 
 ---
 
-# 12. Reducer 不应该做什么
+# 15. Reducer 不应该做什么
 
 Reducer **不做**：
 
 - LLM 语义判断；
 - 事实搜索；
-- 判断用户“真正想要什么”；
+- Authority / Human Gate 判断；
 - 自动裁决 reviewer 冲突；
-- 自动 rebase stale proposal；
-- 执行外部 side effect；
-- 自动决定 next action。
+- 自动 rebase stale Proposal；
+- 执行 external side effect；
+- 自动决定 next action；
+- 创建 PendingHumanGate。
 
 这些分别属于 Policy、Source Resolver、Review Orchestrator、Continuation Runtime、Execution subsystem。
 
-这条边界很重要：Reducer 应尽量接近一个可单元测试的纯函数。
+Reducer 应尽量接近一个可单元测试的 pure-ish function。
 
 ---
 
-# 13. Conflict / Stale / No-op 语义
+# 16. Conflict / Stale / No-op 语义
 
-## 13.1 Stale
+## 16.1 Stale
 
 ```text
 base_state_version != current_state_version
@@ -602,303 +794,325 @@ base_state_version != current_state_version
 
 → `rejected_stale`
 
-上层可以：
+## 16.2 Precondition failure
 
-- 重新生成 Proposal；
-- rebase reviewer issue；
-- 请求人处理。
-
-## 13.2 Precondition failure
-
-State version 没变，但目标语义不再满足。
+State version 没变，但 operation 的局部前提不成立：
 
 → `rejected_precondition`
 
-## 13.3 Invariant failure
+## 16.3 Invariant failure
 
-例如删除 committed decision、引用不存在对象。
+例如引用不存在对象、试图静默删除 committed entity：
 
 → `rejected_invariant`
 
-## 13.4 No-op
+## 16.4 No-op
 
-例如重复 attach 同一个 source ref，且 fingerprint/version 未变化。
+例如 operation 期望的状态已经成立。
 
-→ `no_op`
+规则冻结为：
 
-No-op 不应该生成新 state version。
+```text
+所有 operation 都是 no-op
+→ outcome = no_op
+→ state_version 不变
+```
+
+```text
+至少一项产生实际 mutation
+且其余 operation 均成功或 no-op
+→ outcome = applied
+→ state_version + 1
+```
+
+`no-op` 不视为事务失败。
 
 ---
 
-# 14. 三个典型例子
+# 17. AuthorizationResult 与 ApplyResult 的接口边界
 
-## 14.1 Agent 添加 Hypothesis
+这两个对象不能混。
 
-Proposal：
+## AuthorizationResult
 
-```yaml
-base_state_version: 17
-operations:
-  - op_id: OP-101
-    op: add_hypothesis
-    payload:
-      id: H-021
-      claim: Feeding Motivation 可能更适合作为 derived working state。
-    provenance:
-      turn_refs: [T-188]
-```
-
-Policy：agent 对 Working State 有 delegated authority。
-
-Reducer：验证 ID / version / provenance，apply。
-
-结果：
+Policy owns：
 
 ```text
-State v18
-H-021 exists in working.hypotheses
-```
-
-## 14.2 Agent 试图直接提交产品 Decision
-
-Proposal：
-
-```yaml
-op: commit_decision
-payload:
-  id: D-031
-  claim: Secondary 必须固定为 Primary 的 0.7。
-```
-
-Policy 检测：这是产品选择，当前 policy `human_required`。
-
-结果：
-
-```text
+authorized
 requires_human
+denied
+PendingHumanGate creation
 ```
 
-Reducer 根本不会看到这条未经授权的 operation。
+## ApplyResult
 
-## 14.3 Reviewer 基于旧 Snapshot 返回 Blocker
-
-Reviewer Proposal：
-
-```yaml
-base_state_version: 37
-review_snapshot_id: RS-008
-op: add_review_issue
-```
-
-当前 State 已是 v44。
-
-结果：
+Reducer owns：
 
 ```text
+applied
+no_op
 rejected_stale
+rejected_precondition
+rejected_invariant
 ```
 
-上层 Review Orchestrator 决定是否：
+因此后续 Continuation Runtime 的输入应是：
 
 ```text
-rebase issue against v44
-rerun reviewer
-ignore as resolved
+Run State
++ latest AuthorizationResult / PendingHumanGate
++ ApplyResult（若 Reducer 执行过）
++ Runtime Signals
 ```
 
-Reducer 不猜。
+而不是让 Reducer 用 `effects.pending_human_gates` 偷偷承担 Policy 职责。
 
 ---
 
-# 15. Compaction 与 State Delta 的关系
+# 18. Review / stale Proposal
 
-Stateful Compaction 不应该输出一份完整“最新 State”。
+Reviewer Proposal 必须携带：
 
-它应该产生：
+```yaml
+review_snapshot_id:
+base_state_version:
+```
+
+如果主线程已经推进：
 
 ```text
-1. Proposal Delta
-2. Carry Context / Working Set update
-3. 可选 Checkpoint recommendation
+base_state_version != current
 ```
+
+Reducer 直接 `rejected_stale`。
+
+是否重新生成 Reviewer Proposal、是否仍保留原 issue 的价值，由 Review Orchestrator / Policy 决定。
+
+---
+
+# 19. Compaction Worker 的输出
+
+Compaction Worker 不拥有 State。
+
+它的输出仍然是一个或多个**彼此独立、各自 atomic 的 Proposal**：
+
+```text
+Transcript Segment
+      ↓
+State Extraction
+      ↓
+Proposal(s)
+      ↓
+Policy
+      ↓
+Reducer
+```
+
+若同一段 Compaction 产生两个互不依赖的变化，可以拆成两个 Proposal；若三个 operation 必须共同成立，则必须放在同一 Proposal。
+
+禁止：
+
+```text
+Transcript
+→ new_state.yaml
+→ overwrite
+```
+
+---
+
+# 20. Context Compiler 只消费 Applied State
+
+Context Compiler 可以知道存在 PendingHumanGate / denied Proposal，但不能把它们伪装成 Committed State。
 
 例如：
 
 ```text
-Recent Transcript Segment
-        ↓
-Compaction Worker
-        ↓
-Proposal:
-- add hypothesis
-- close question
-- propose decision
-- set frontier
-        ↓
-Policy
-        ↓
-Authorized Delta
-        ↓
-Reducer
+Committed Decision
+→ 可以作为正式约束投影
+
+Pending Proposal requesting Decision
+→ 只能标为 Pending / Awaiting Approval
 ```
 
-因此 Compaction Worker 永远不是 State owner。
+这样模型不会因为“自己刚提出一个方案”就在下一轮把它当成已确认事实。
 
 ---
 
-# 16. Context Compiler 只读取已应用 State
+# 21. State Delta v0 的最小实现范围
 
-Context Compiler 不应该直接消费“尚未授权的 Proposal”作为 authoritative state。
-
-默认顺序：
+真正 M0/M1 需要实现的 operation 可以进一步收窄：
 
 ```text
-Proposal
-→ Policy
-→ Reducer
-→ State vN+1
-→ Context Compiler
-→ Context Projection
+add_hypothesis
+retire_hypothesis
+open_question
+close_question
+set_frontier
+
+commit_constraint
+commit_decision
+commit_rejection
+supersede_decision
+reopen_rejection
+
+commit_scope_change
+
+attach_source_ref
+attach_evidence_ref
+record_source_supersession
 ```
 
-如果某个 pending Human Gate 需要展示 candidate decision，可以显式放入 `pending proposals` 区，而不能伪装成 committed state。
+其他 operation 可以在需要时扩展，不必一次全部完成。
 
 ---
 
-# 17. 与 Continuation State Machine 的接口
+# 22. 必须测试的场景
 
-State Delta Contract 不决定下一步 Action，但会给 Continuation Runtime 提供信号，例如：
+至少覆盖：
 
-```yaml
-apply_result:
-  outcome: applied
-  state_version: 18
-  effects:
-    opened_questions: []
-    closed_questions: [Q-014]
-    committed_decisions: []
-    pending_human_gates: [HG-004]
-    frontier_changed: true
-```
-
-Continuation Runtime 可以据此决定：
+### A. Agent 请求普通 Working mutation
 
 ```text
-CONTINUE_FOCUSED
-ASK_HUMAN
-COMPACT
-ROLLOVER
-COMPLETE
+Proposal(add_hypothesis)
+→ authorized
+→ applied
 ```
 
-这保持“State transition”和“Next action policy”分离。
-
----
-
-# 18. 与 Execution Journal 的接口
-
-一次 State Delta apply 是本地 state mutation，不等于 provider action lifecycle。
-
-Journal 后续至少要能引用：
-
-```yaml
-action_id:
-proposal_id:
-delta_id:
-apply_result_ref:
-```
-
-但不要把：
+### B. Agent 请求 Product Decision
 
 ```text
-prompt sent
-assistant observed
-state proposal accepted
+Proposal(commit_decision)
+→ requires_human
+→ durable PendingHumanGate
+→ crash/restart
+→ gate 仍存在
+→ human approves
+→ new AuthorizationResult authorized
+→ applied
 ```
 
-压成同一个状态字段。
-
-详细语义留给《Execution Journal & Recovery Contract v0》。
-
----
-
-# 19. v0 不做什么
-
-明确不做：
-
-- CRDT / distributed merge；
-- 自动 stale delta merge；
-- 任意 JSON Patch；
-- 通用知识图谱；
-- source truth 自动刷新引擎；
-- reviewer consensus 算法；
-- automatic fact adjudication；
-- 跨 Run transaction；
-- partial apply。
-
-v0 的目标只有：
-
-> **让单 Run 的结构化 State 可以被安全、可追溯、可授权、可测试地演进。**
-
----
-
-# 20. 建议的实现接口形态
-
-不是最终语言/API，只表达模块边界：
+### C. Atomic Proposal 中一项需要 Human
 
 ```text
-authorize(proposal, state, policy) -> AuthorizationResult
-reduce(state, authorized_delta) -> ApplyResult + NewState
-audit(proposal, authorization, apply_result) -> AuditRecord
+commit D-023
+close Q-014
+set frontier
 ```
 
-`reduce` 应尽量纯函数化：
+若 `commit D-023` requires_human：
 
 ```text
-同样 State + 同样 Authorized Delta
-→ 同样结果
+整个 Proposal requires_human
+State 不发生部分 mutation
 ```
 
-这样后续可以做 replay、property test 和 crash recovery verification。
+### D. Stale reviewer
+
+```text
+Proposal base v17
+Current v20
+→ rejected_stale
+```
+
+### E. Rejected option 无条件复活
+
+```text
+reopen_rejection without valid authorized path
+→ rejected / invariant failure
+```
+
+### F. Source re-observation
+
+```text
+S-004 = commit A
+new observation = commit B
+→ create S-011
+→ do not overwrite S-004
+```
+
+### G. Mixed no-op
+
+```text
+OP1 no-op
+OP2 actual mutation
+→ outcome applied
+→ version +1
+```
+
+### H. All no-op
+
+```text
+all operations no-op
+→ outcome no_op
+→ version unchanged
+```
 
 ---
 
-# 21. 最小测试集
+# 23. 当前冻结结论
 
-State Delta Contract 在进入实现前至少应有这些 test case：
-
-1. agent 可添加 hypothesis；
-2. agent 无权直接改 scope；
-3. hypothesis 不能直接变 committed decision；
-4. committed decision 不能被 delete；
-5. rejected item 不能无 reopen operation 复活；
-6. stale base version 被拒绝；
-7. precondition 失败不改 State；
-8. multi-op delta 任一失败则全部回滚；
-9. no-op 不 bump state version；
-10. successful delta 只 bump 一次 version；
-11. factual claim provenance 可追到 Source Ref；
-12. normative claim 不错误服从 agent inference；
-13. reviewer stale snapshot 不直接污染当前 State；
-14. identical reducer input 可 deterministic replay。
+1. **Proposal 是 request；Operation 是 desired final state transition。**
+2. **v0 不存在 `propose_*` Reducer operation。**
+3. **Proposal 是最小逻辑事务单元。**
+4. **Authorization 与 Reducer 都遵守同一事务边界。**
+5. **AuthorizationResult 必须 durable。**
+6. **Human Gate 由 Policy 创建并持久化，不由 Reducer产生。**
+7. **Authorized Delta 只在整笔 Proposal authorized 时存在。**
+8. **Reducer deterministic，不做 authority/LLM/source reasoning。**
+9. **SourceRef observation immutable；新观察创建新 SourceRef。**
+10. **EvidenceRef 承载 claim_kind / authority_role；Source 与 Claim 分离。**
+11. **stale Proposal 不自动 merge。**
+12. **全部 no-op 不 bump version；mixed no-op + mutation 算 applied。**
+13. **Context Compiler 只把 Applied/Committed State 当正式工作状态。**
 
 ---
 
-# 22. 下一步
+# 24. 与下一层 Continuation 的接口
 
-这篇 Contract 完成后，下一篇应进入：
+Continuation State Machine 不需要猜 State Delta 内部细节。
 
-> **《Continuation State Machine v0》**
+它只需要消费清晰的结果对象：
 
-它要回答：
+```text
+Run State
+AuthorizationResult
+PendingHumanGate?
+ApplyResult?
+Runtime Signals
+```
 
-- 什么时候继续；
-- 什么时候 focused continue；
-- 什么时候 Human Gate；
-- completion 如何判定；
-- compaction / rollover / refresh 如何成为 Action，而不是顶层业务状态；
-- user activity 如何抢占 automation；
-- integrity failure 如何进入 reconcile / pause；
-- State Delta apply result 如何影响 next action。
+典型：
 
-Execution Journal 的 dispatch/reconciliation/state-application 多轴状态，则留到第四篇独立 Contract。
+```text
+AuthorizationResult = requires_human
+→ PAUSED_HUMAN
+```
+
+```text
+AuthorizationResult = authorized
+ApplyResult = applied
+→ DECIDE_NEXT_ACTION
+```
+
+```text
+ApplyResult = rejected_stale
+→ RECONCILE / REGENERATE
+```
+
+这条接口钉死以后，下一篇 Continuation Contract 才有稳定地基。
+
+---
+
+## 当前状态
+
+本文继续保持 **Design Candidate v0**。
+
+本轮已关闭：
+
+- Proposal vs `propose_*` 双重建模；
+- per-operation authorization 与 all-or-nothing atomicity 冲突；
+- `requires_human` 缺少 durable owner；
+- Source observation 可被原地覆盖的问题；
+- mixed no-op 语义空洞。
+
+下一步应与 Runtime Object & Authority Model 做一次接口对审；通过后再考虑两篇一起升 Baseline，并进入 Continuation State Machine。
