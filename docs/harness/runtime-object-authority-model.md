@@ -2,7 +2,8 @@
 
 > **状态**：Design Candidate v0  
 > **日期**：2026-08-27  
-> **上位文档**：[NOOS Harness Overview v0.2](overview.md)
+> **上位文档**：[NOOS Harness Overview v0.2](overview.md)  
+> **下一层接口**：[State Delta + Reducer Contract v0](state-delta-reducer-contract.md)
 
 ---
 
@@ -10,23 +11,23 @@
 
 Harness Overview 已经确定一个核心方向：
 
-> **Run 是用户真正拥有的长期工作；Chatbot conversation 只是其中一段执行载体。**
+> **Run 是用户真正拥有的长期工作；Provider Conversation 只是其中一段可替换的执行载体。**
 
-但如果不继续把对象边界和 authority 讲清楚，后续所有实现都会混乱：
+如果不继续把对象边界和 authority 讲清楚，后续所有实现都会混乱：
 
-- 浏览器刷新时，究竟什么应该活下来？
-- ChatGPT conversation rollover 后，旧 conversation 是“丢掉”还是“归档”？
-- 某个模型说“这个结论已经确认”，它有没有资格这么确认？
-- Notion / GitHub 中的 Current Fact 与 Run State 冲突时听谁的？
-- Reviewer 返回一个 blocker 时，如果主线程已经从 v37 推进到 v44，该怎么办？
-- 系统崩溃以后，如何知道上一条 Continue 是否已经真正发给 Provider？
+- 浏览器刷新时，什么应该活下来？
+- Conversation rollover 后，旧 conversation 是“丢掉”还是“保留为 provenance”？
+- 模型说“这个结论已经确认”，它有没有资格确认？
+- Notion / GitHub 当前事实与 Run State 冲突时听谁的？
+- Reviewer 基于 v37 提出 blocker，但主线程已推进到 v44，如何判断 issue 是否过期？
+- 系统崩溃以后，如何知道上一条 Continue 是否已经发送？
 
-因此，这篇文档先冻结两个地基：
+因此本文冻结两个地基：
 
-1. **Runtime Object Model**：系统里到底有哪些一等对象，它们由谁拥有、生命周期多长、如何关联；
-2. **Authority Model**：不同类型的信息、决策和动作，谁有资格提出、确认、修改和覆盖。
+1. **Runtime Object Model**：有哪些一等对象、谁拥有、生命周期多长、如何关联；
+2. **Authority Model**：事实、决策、动作与 scope 分别由谁产生、确认、修改和覆盖。
 
-这篇不是完整技术 schema，也不是 API 设计。它先把语义所有权钉死。
+本文不是完整 API/schema，而是后续 Contract 的语义地基。
 
 ---
 
@@ -36,42 +37,36 @@ Harness Overview 已经确定一个核心方向：
 
 ```text
 Run = 用户真正拥有的长期工作
-Provider Conversation = 外部 AI 平台上的一段对话载体
-Browser Session = 某一时刻承载网页与 adapter 的临时执行表面
+Provider Conversation = 外部 AI Provider 上的一段对话载体
+Browser Session = 某一时刻承载网页与 adapter 的临时运行表面
 ```
 
 因此：
 
-> **Run durable；Conversation replaceable；Browser Session disposable。**
+> **Run durable；Provider Conversation replaceable；Browser Session disposable。**
 
 ## 1.2 State 不等于 Truth
 
-Run State 管的是：
+Run State 管：
 
-- 这项工作现在认为自己在做什么；
-- 已经做了什么决定；
-- 还有什么没解决；
-- 下一步怎么走。
+- 这项工作现在在做什么；
+- 已经提交了哪些约束与决策；
+- 还有什么未解决；
+- 下一步怎么继续。
 
-它并不天然拥有所有外部事实的最终真理权。
-
-因此：
+外部事实是否为真，仍由相应 source 的 epistemic authority 决定。
 
 > **Operational Authority 与 Epistemic Authority 必须分开。**
 
-## 1.3 模型不能直接拥有 Canonical State Transition
+## 1.3 模型不能直接拥有 Committed State Transition
 
-LLM 可以发现、推导和建议。
-
-但：
+LLM 可以发现、推导、建议和提交 Proposal，但不能因为自己写出一句结论，就自动把它升级为正式状态。
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
 ## 1.4 原始轨迹保留，但不默认进入下一轮上下文
 
-Transcript、old conversation、review trace 都应该可回溯。
-
-但：
+Transcript、旧 conversation、review trace 都应可回溯，但：
 
 > **Evidence Archive ≠ Active Working Context。**
 
@@ -80,10 +75,11 @@ Transcript、old conversation、review trace 都应该可回溯。
 系统必须区分：
 
 ```text
-我计划做了什么
-我真的发出去了吗
+计划了什么
+实际发送了吗
 Provider 是否观察到了
-结果是否已被 State 接纳
+结果是否被看见
+状态变更是否被授权与应用
 ```
 
 因此 Runtime 必须有 Execution Journal。
@@ -91,8 +87,6 @@ Provider 是否观察到了
 ---
 
 # 2. 顶层对象图
-
-第一版对象模型建议如下：
 
 ```text
 Project
@@ -103,7 +97,6 @@ Project
    │  ├─ Provider Conversation[]
    │  │  └─ Turn[]
    │  └─ Review Snapshot / Review Issue[]
-   │
    ├─ Source Ref[]
    └─ Execution Journal[]
 
@@ -112,19 +105,13 @@ Browser Session[]
    └─ attaches to one Provider Conversation at a time
 ```
 
-注意：Browser Session 不应该被错误地嵌套成 Provider Conversation 的永久子对象。
-
-它只是“当前有一个浏览器实例正在挂接这个 conversation”。
+Browser Session 不应被建模为 Provider Conversation 的永久子对象。它只是当前某个浏览器运行表面正在挂接某个 conversation。
 
 ---
 
 # 3. Project
 
-## 3.1 定义
-
-Project 是较长期的工作域或知识域。
-
-例如：
+Project 是较长期的工作域或知识域，例如：
 
 ```text
 NOOS
@@ -132,74 +119,33 @@ NOOS
 SLG 求职
 ```
 
-## 3.2 Project 拥有什么
-
 Project 可以拥有：
 
 - 多个 Run；
 - Project-level source / instruction；
 - Vault / Artifact；
-- 长期 Context / Crystal / Handoff；
+- Crystal / Handoff；
 - 默认 Authority Policy。
 
-## 3.3 Project 不应该承担什么
-
-Project 不应该直接保存某个正在执行步骤的瞬时状态。
-
-例如：
-
-```text
-正在等待 ChatGPT 第 14 轮输出
-```
-
-属于 Run / Execution Journal，不属于 Project。
+Project 不保存瞬时执行状态，例如“正在等待 ChatGPT 第 14 轮输出”。这属于 Run / Execution Journal。
 
 ---
 
 # 4. Run
 
-## 4.1 定义
-
-Run 是 NOOS Harness 中最重要的一等对象。
-
-它表示：
+Run 是 Harness 中最重要的一等对象：
 
 > **一个用户希望持续推进、最终达到某个 deliverable 的 AI 工作实例。**
 
-例如：
+典型生命周期：
 
 ```text
-Run:
-《World Condition → Fish Response 产品因果模型》
+created → active → paused → active → completed
 ```
 
-## 4.2 Run 的生命周期
+也可进入 `cancelled` 或从 `completed` 显式 `reopened`。
 
-典型：
-
-```text
-created
-→ active
-→ paused
-→ active
-→ completed
-```
-
-也可以：
-
-```text
-active
-→ cancelled
-```
-
-或者：
-
-```text
-completed
-→ reopened
-```
-
-## 4.3 Run 必须拥有的最小语义
+最小语义：
 
 ```yaml
 id:
@@ -213,28 +159,13 @@ created_at:
 updated_at:
 ```
 
-## 4.4 Run 是 durable 的
-
-下面这些都不能杀死 Run：
-
-- 浏览器刷新；
-- tab 被关闭；
-- Browser Session 失效；
-- ChatGPT conversation rollover；
-- Provider 切换；
-- 系统重启。
-
-只有显式完成、取消或用户删除才结束 Run。
+浏览器刷新、tab 关闭、Browser Session 失效、Provider Conversation rollover、Provider 切换、进程重启，都不能杀死 Run。
 
 ---
 
 # 5. Logical Thread
 
-## 5.1 定义
-
-Logical Thread 表示一个在 Run 内持续存在的工作角色或正交思考维度。
-
-例如：
+Logical Thread 表示 Run 内持续存在的一条工作角色/正交思考线，例如：
 
 ```text
 Main Design
@@ -243,34 +174,9 @@ Product Review
 Production Review
 ```
 
-它不是一个 conversation。
-
 同一个 Logical Thread 可以跨多个 Provider Conversation。
 
-## 5.2 为什么需要 Logical Thread
-
-没有 Logical Thread 时：
-
-```text
-Chat A
-Chat B
-Chat C
-```
-
-只能知道“有三个 Chat”。
-
-有 Logical Thread 后：
-
-```text
-Main Design
-├─ Chat A
-├─ Chat B
-└─ Chat C
-```
-
-系统知道这三个 conversation 在语义上属于同一条连续工作线。
-
-## 5.3 Logical Thread 的最小字段
+最小字段：
 
 ```yaml
 id:
@@ -282,39 +188,34 @@ current_provider_conversation_id:
 created_at:
 ```
 
+## 5.1 v0 单 active carrier invariant
+
+> **v0 中，一个 Logical Thread 同一时刻至多有一个 `current_provider_conversation_id`。**
+
+如果需要 reviewer fan-out，应创建多个 Logical Thread，而不是让一个 Thread 同时拥有多个 current carrier。
+
+该 invariant 让 rollover、resume、checkpoint 和 action routing 保持单义；未来若真实用例证明需要同一 Thread 多 active carrier，再显式升级模型。
+
 ---
 
 # 6. Provider Conversation
 
-## 6.1 定义
+Provider Conversation 是外部 AI Provider 持久化的一段 conversation carrier，例如 ChatGPT conversation ID 或 Claude conversation ID。
 
-Provider Conversation 是外部 AI Provider 保存的一段 conversation carrier。
+它通常：
 
-例如：
-
-```text
-ChatGPT conversation abc123
-Claude conversation xyz789
-```
-
-## 6.2 它不是 disposable runtime resource
-
-Provider Conversation 通常：
-
-- 有稳定 URL / ID；
+- 有稳定 URL / ref；
 - Provider 服务端会保存；
-- 包含历史 Turn；
-- 是重要 provenance；
-- rollover 后仍然需要回看；
+- 包含 Turn 历史；
+- 是 provenance；
+- rollover 后仍需回看；
 - 可能被重新 attach。
 
-所以正确描述是：
+因此正确描述是：
 
 > **replaceable carrier, externally persisted, provenance-bearing。**
 
-## 6.3 Provider Conversation 的状态
-
-可以非常简单：
+状态可以先保持简单：
 
 ```text
 active
@@ -323,11 +224,9 @@ archived
 unavailable
 ```
 
-`rolled_over` 不代表删除，只代表：
+`rolled_over` 不表示删除，只表示不再承载 Logical Thread 的当前工作面。
 
-> 这个 conversation 不再承载 Logical Thread 的当前工作面。
-
-## 6.4 最小字段
+最小字段：
 
 ```yaml
 id:
@@ -343,34 +242,13 @@ rollover_reason:
 
 ---
 
-# 7. Browser Session
+# 7. Browser Session / Adapter Attachment
 
-## 7.1 定义
+Browser Session 才是真正可丢弃的执行环境，可以对应 tab、window、WebView、content-script lifecycle 等。
 
-Browser Session 是真正的临时执行环境。
+它可能因 refresh、crash、tab close、browser restart、navigation、extension reload 而结束。
 
-它可以对应：
-
-- 一个 tab；
-- 一个 window；
-- 一个 WebView；
-- 一个 extension content-script attachment；
-- 一个页面 lifecycle。
-
-## 7.2 Browser Session 是 disposable
-
-它可以随时因为这些原因结束：
-
-- refresh；
-- crash；
-- tab close；
-- browser restart；
-- provider navigation；
-- extension reload。
-
-结束以后，Run 不应该受影响。
-
-## 7.3 Browser Session 的最小语义
+最小语义：
 
 ```yaml
 id:
@@ -383,41 +261,21 @@ started_at:
 last_seen_at:
 ```
 
-## 7.4 Adapter Attachment
-
-Adapter Attachment 表示：
-
-> 某个 Browser Session 当前已经成功识别并挂接到某个 Provider Conversation。
-
-它是 runtime 状态，不是业务状态。
+Adapter Attachment 表示某个 Browser Session 当前成功识别并挂接到一个 Provider Conversation。它是 runtime state，不是业务 state。
 
 ---
 
 # 8. Turn
 
-## 8.1 定义
-
-Turn 是 Provider Conversation 内的一次消息级交互。
-
-至少区分：
+Turn 是 Provider Conversation 内的消息级交互，至少区分：
 
 ```text
 user turn
 assistant turn
-system-visible adapter control turn（若存在）
+provider-visible adapter control turn（若存在）
 ```
 
-## 8.2 为什么 Turn 需要 provenance
-
-后面的 State Delta 可能引用：
-
-```text
-D-017 来自哪一轮？
-Q-014 为什么被关闭？
-Reviewer 依据了哪段输出？
-```
-
-所以最小应该能追到：
+最小 provenance：
 
 ```yaml
 provider_conversation_id:
@@ -427,13 +285,11 @@ observed_at:
 fingerprint:
 ```
 
-Raw content 可以留在 transcript / archive，不要求全部塞进 State Store。
+Raw content 可以留在 transcript/archive，不要求全部复制进 State Store。
 
 ---
 
 # 9. Run State
-
-## 9.1 定义
 
 Run State 表示：
 
@@ -441,7 +297,7 @@ Run State 表示：
 
 它不是原始聊天，也不是外部事实数据库。
 
-## 9.2 建议分层
+建议分层：
 
 ```yaml
 run_state:
@@ -452,7 +308,7 @@ run_state:
     phase:
     status:
 
-  canonical:
+  committed:
     constraints: []
     decisions: []
     rejected: []
@@ -472,42 +328,41 @@ run_state:
     last_checkpoint_id:
 ```
 
-## 9.3 Canonical 与 Working 不同权限
+## 9.1 为什么叫 Committed State，而不是 Canonical State
 
-Canonical State：
+`canonical` 保留给 **Canonical Source** 这一 epistemic 概念。
+
+Run 内正式提交的约束、决策和 rejection 称为 **Committed State**，避免出现“canonical state 与 canonical source 冲突”这种语义重载。
+
+Committed State：
 
 - 改动少；
 - 需要更高 authority；
 - 必须 provenance；
-- 不允许静默删除。
+- 不允许静默删除；
+- 被 supersede/reopen 时仍保留历史。
 
 Working State：
 
 - 允许 agent 高频更新；
-- 可以被替换和衰减；
+- 可替换、衰减或丢弃；
 - 不代表正式决策。
 
 ---
 
 # 10. Checkpoint
 
-## 10.1 定义
-
 Checkpoint 是某个时刻 Run State 的冻结版本，并附带恢复所需的最小 runtime reference。
 
-## 10.2 Checkpoint 用途
+用途：
 
 - crash recovery；
 - conversation rollover；
 - rollback / audit；
 - review snapshot generation；
-- before external write safety point。
+- external write 前的 safety point。
 
-## 10.3 Checkpoint 与 Summary 不同
-
-Checkpoint 不是一篇摘要。
-
-它应该指向：
+Checkpoint 不是自然语言 Summary。
 
 ```yaml
 id:
@@ -520,86 +375,113 @@ created_at:
 reason:
 ```
 
-State 内容可以 snapshot 或引用版本化 State Store。
-
 ---
 
-# 11. Source Ref
+# 11. Source Ref：不要把三个维度混成一个 authority enum
 
-## 11.1 为什么 Source Ref 是一等对象
+Source Ref 是一等对象，因为事实性 claim 必须能追溯“依据什么、哪个版本、什么时候观察到”。
 
-Run State 里出现一句：
-
-> “Production 当前使用 Scheduled DEF。”
-
-如果只保存这句话，过几天它可能已经过期。
-
-因此 State 必须能指向来源。
-
-## 11.2 最小字段
+旧式字段：
 
 ```yaml
-id:
-uri:
-kind:
-authority:
-version:
-observed_at:
-freshness:
-content_fingerprint:
+authority: canonical | current | historical | user_asserted | agent_inferred
 ```
 
-## 11.3 authority 示例
+把“谁产生”“冲突时多权威”“时间状态”混在一起，无法表达一个 source 同时是 `user + canonical + current`。
 
-```text
-canonical
-current
-reference
-historical
-user_asserted
-agent_inferred
+v0 改为正交维度：
+
+```yaml
+source_ref:
+  id:
+  uri:
+
+  origin_kind:
+    # user | document | runtime | agent | external
+
+  authority_role:
+    # canonical | supporting | reference
+
+  temporal_status:
+    # current | historical | unknown
+
+  claim_kind:
+    # fact | preference | constraint | decision | inference
+
+  version:
+  observed_at:
+  freshness:
+  content_fingerprint:
 ```
 
-这些值后续可以再正式化。
+这些 enum 仍是 Design Candidate，后续可根据真实 provider/source 扩展；但**维度分离本身是 v0 invariant**。
 
-当前重要的是：
+## 11.1 Source Ref 不是 Truth Cache
 
-> **State 中的事实性 claim 必须允许追到它依据什么 source authority。**
+Source Ref 记录的是一次可追溯来源与观察状态。对于会变化的 source：
+
+- `observed_at` 不能缺；
+- `version` / `fingerprint` 在可获得时应记录；
+- `freshness` 必须允许被标记为 stale/unknown；
+- State 中的事实性 claim 不能因为曾被 summarise 进 State 就永久获得真理权。
 
 ---
 
-# 12. Authority Model：四种不同问题不能混在一起
+# 12. Authority Model：至少四种问题不能混在一起
 
-“Authority”至少包含四个维度。
-
-## 12.1 Source Authority
+## 12.1 Source / Epistemic Authority
 
 回答：
 
-> 某个事实应该听谁的？
+> 某个 claim 的事实依据应该听谁的？
+
+Authority 解析必须结合 **claim_kind**，不能只靠 source origin 排一个全局序。
+
+### Normative claim
+
+例如用户的：
+
+- goal；
+- preference；
+- scope；
+- 用户明确做出的 decision。
+
+在这些问题上：
+
+```text
+explicit user assertion > agent inference
+```
+
+通常成立。
+
+### Factual claim
 
 例如：
 
-```text
-Current Notion > Historical Wiki
-Current Git code > 旧 implementation note
-用户明确纠正 > agent 猜测
-```
+- 当前 Git 代码用了哪个 index；
+- Production runtime 当前行为是什么；
+- 某 Notion Current 页面现在写了什么。
 
-这是 Epistemic Authority。
+这时不能简单使用 `user > source`。应优先依据该事实领域的 canonical/current source；用户输入可以作为 correction proposal 或新的 evidence，但不自动覆盖可验证的当前 source。
+
+因此更准确的原则是：
+
+> **Authority resolver 先判断 claim type，再依据 authority role、temporal status、source identity 与 freshness 决定冲突处理。**
+
+v0 不要求实现通用 resolver，但禁止把所有 claim 塞进一条固定优先级链。
 
 ## 12.2 Decision Authority
 
 回答：
 
-> 谁有资格把一个候选结论升级成 Run 的 Confirmed Decision？
+> 谁有资格把候选结论提升为 Run 的 Committed Decision？
 
 可能是：
 
 - Human only；
 - agent delegated；
 - reviewer recommendation + owner approval；
-- source-derived automatic rule。
+- source-derived deterministic rule。
 
 ## 12.3 Action Authority
 
@@ -607,402 +489,201 @@ Current Git code > 旧 implementation note
 
 > 谁可以执行什么动作？
 
-例如：
-
-- Continue 可以自动；
-- Refresh 可以自动；
-- Rollover 可以自动；
-- 修改 Notion Current 可能必须 Human Gate；
-- 删除 GitHub 文件必须 Human Gate。
+例如 Continue / Refresh / Rollover 可被 delegated；修改正式文档、删除文件等可能必须 Human Gate。
 
 ## 12.4 Scope Authority
 
 回答：
 
-> 谁可以改变这个 Run 正在解决的问题？
+> 谁可以改变 Run 正在解决的问题？
 
-默认应该最保守。
-
-Agent 可以发现“可能需要扩大范围”，但只能提出：
-
-```text
-propose_scope_change
-```
-
-不能自己把 scope 改掉。
+默认应最保守。Agent 可以 `propose_scope_change`，但不能静默改 scope。
 
 ---
 
 # 13. Promotion Model
 
-Run 内很多内容都不是一出生就是 Decision。
+Run 内的内容不应一出生就是 Committed Decision。
 
-更合理的生命周期：
+推荐最小 promotion path：
 
 ```text
-observation
-↓
+observation / inference
+        ↓
 hypothesis
-↓
-candidate conclusion
-↓
+        ↓
 candidate decision
-↓
-confirmed decision
+        ↓
+policy authorization
+        ↓
+committed decision
 ```
 
-某些路径也可以：
-
-```text
-hypothesis
-→ rejected
-```
-
-或者：
-
-```text
-confirmed decision
-→ reopened
-→ superseded
-```
-
-## 13.1 为什么 Promotion 很重要
-
-如果模型一说：
-
-> “因此我们可以确定……”
-
-系统就自动 `add_decision`，那 Reducer 再严格也没有意义。
-
-所以 State Delta Proposal 必须表达：
+一个 Run 可以配置 delegated authority，例如：
 
 ```yaml
-op: propose_decision
+authority_policy:
+  agent_may:
+    - add_hypothesis
+    - add_evidence
+    - set_frontier
+    - close_exploratory_question
+
+  human_required:
+    - change_scope
+    - supersede_committed_decision
+    - make_product_preference_choice
+    - external_irreversible_write
 ```
 
-而不是所有 agent 都能直接：
-
-```yaml
-op: add_confirmed_decision
-```
-
-## 13.2 默认 Authority Policy 候选
-
-第一版可以非常保守：
-
-```yaml
-agent_may:
-  - add_observation
-  - add_hypothesis
-  - add_evidence
-  - open_question
-  - set_frontier
-  - update_working_set
-  - close_exploratory_question
-
-policy_may_auto_promote:
-  - low-risk procedural state
-
-human_required:
-  - product_choice
-  - change_scope
-  - supersede_confirmed_decision
-  - reopen_rejected_core_option
-  - external_write
-  - irreversible_action
-```
-
-后续可按 Run 类型配置 delegated authority。
+这不是 UI 的“Human Gate 列表”，而是 State Delta 能否被授权的正式语义来源。
 
 ---
 
-# 14. State Delta 与 Authority 的关系
+# 14. State Transition Pipeline
 
-推荐链路：
+建议统一链路：
 
 ```text
-Worker / Reviewer / Tool
-      ↓
-Proposal
-      ↓
-Normalize
-      ↓
-Authority Policy
-      ↓
-Authorized Operation
-      ↓
-Reducer
-      ↓
-State Version N+1
-      ↓
-Audit / Journal
+Worker / Reviewer / User / Source Observer
+              ↓
+           Proposal
+              ↓
+      Authority / Promotion Policy
+              ↓
+        Authorized Delta
+              ↓
+            Reducer
+              ↓
+          Run State vN+1
+              ↓
+        Audit / Journal Ref
 ```
 
-这里每一层回答不同问题：
+Reducer 负责完整性，不负责自行判断谁有资格确认产品决策。
 
-### Proposal
+后续 operation、precondition、conflict 与 provenance 的正式契约见：
 
-“模型想改什么？”
-
-### Authority Policy
-
-“它有没有资格这么改？”
-
-### Reducer
-
-“这个改动在状态机上合法吗？”
-
-### Audit / Journal
-
-“这次到底发生了什么？”
-
-不能把这四个职责揉成一个 `apply_delta()`。
+> [State Delta + Reducer Contract v0](state-delta-reducer-contract.md)
 
 ---
 
-# 15. Reducer 应维护的最小 invariant
+# 15. Execution Journal
 
-第一版建议冻结：
+State Store 与 Execution Journal 的职责不同：
 
-1. Confirmed Decision 不得静默删除；
-2. Confirmed Decision 只能 `supersede` / `reopen`，并保留历史；
-3. Constraint 不得由普通 worker 随手改写；
-4. Rejected core option 不得无理由复活；
-5. Canonical operation 必须有 provenance；
-6. base_state_version 必须匹配或进入 reconcile；
-7. Working hypothesis 不得被 reducer 自动视为 confirmed；
-8. Source-backed factual claim 必须保留 Source Ref；
-9. stale review issue 不得直接改写最新 State；
-10. external write 不得绕过 Action Authority。
+```text
+State Store       = 现在是什么
+Execution Journal = 刚才发生了什么
+```
+
+本文只冻结 Journal 必须存在，以及 action 必须可用稳定 `action_id` 追踪。
+
+不要在这里过早把所有生命周期压成一条 `planned → sent → observed → committed` 单轴状态机，因为：
+
+```text
+provider side effect happened
+assistant result observed
+state proposal accepted/rejected
+```
+
+是不同维度。
+
+详细 dispatch、reconciliation、state application 与 idempotency 语义留给《Execution Journal & Recovery Contract v0》。
 
 ---
 
-# 16. Review Snapshot 与 stale issue
+# 16. Review Snapshot 与 Staleness
 
-Reviewer 不应该直接消费主线程完整历史。
+Reviewer 不应该直接读取不断变化的“最新 Main State”后再把结果当作永久有效。
 
-更合理：
-
-```text
-State v37
-↓
-Review Snapshot RS-008
-↓
-Reviewer
-↓
-Review Issue
-```
-
-Review Issue 必须带：
+Review Snapshot 至少应包含：
 
 ```yaml
-base_state_version: 37
-review_snapshot_id: RS-008
-```
-
-如果返回时 Main 已经到 v44：
-
-```text
-Issue target 是否仍存在？
-相关 Decision 是否已经 superseded？
-证据是否过期？
-```
-
-Harness 必须先做 stale check，再进入 Owner Adjudication。
-
----
-
-# 17. Execution Journal
-
-## 17.1 为什么 State Store 不够
-
-State Store 只能告诉我们：
-
-> “现在认为自己处于什么状态。”
-
-但 crash recovery 还需要知道：
-
-> “上一条外部副作用到底执行到哪一步？”
-
-## 17.2 最小 Journal
-
-```yaml
-action_id:
+review_snapshot_id:
 run_id:
-logical_thread_id:
-provider_conversation_id:
-browser_session_id:
 base_state_version:
-action_type:
-status: planned | sent | observed | committed | failed
-provider_message_ref:
+thread_id:
 created_at:
-updated_at:
+projection_fingerprint:
 ```
 
-## 17.3 幂等恢复例子
+Review Issue 至少引用：
 
-```text
-A-109 planned
-↓
-prompt 已发给 ChatGPT
-↓
-A-109 sent
-↓
-浏览器崩溃
+```yaml
+review_snapshot_id:
+base_state_version:
 ```
 
-重启以后，系统不能直接再次发送 A-109。
-
-它先：
-
-```text
-reattach conversation
-↓
-find provider message / fingerprint
-↓
-若已存在：observed
-若不存在：根据 policy 决定 resend / ask human
-```
-
-这就是 Runtime Recovery，而不是普通“刷新后继续”。
+Main State 已推进后，系统必须能判断 issue 是仍适用、需 rebase，还是 stale。
 
 ---
 
-# 18. Browser Adapter 应该拥有什么，不应该拥有什么
+# 17. Harness 与 Hub 的归属关系
 
-Browser Shuttle / Adapter 负责：
-
-- 识别 Provider Conversation；
-- 观察 streaming / completion；
-- 获取可见 message；
-- 注入 prompt；
-- Safe Refresh；
-- reattach；
-- 页面健康 telemetry。
-
-它不应该拥有：
-
-- Run State 真相；
-- Decision Authority；
-- Context Compilation Policy；
-- Project Vault；
-- Review adjudication。
-
-因此浏览器页面永远只是 execution surface。
-
----
-
-# 19. Hub 应该拥有什么
-
-第一阶段直接定义：
+v0 默认：
 
 ```text
 NOOS Hub
-├─ Run Store
-├─ State Store
-├─ Source / Vault
-├─ Context Compiler
-├─ Authority Policy
-├─ Reducer
-├─ Action Policy
-├─ Execution Journal
-└─ Harness Runtime
-```
+├─ Vault / Artifact Store
+├─ Context Broker
+├─ Harness Runtime
+└─ Tool Router
 
-Shuttle 则是：
-
-```text
 Browser Shuttle
 └─ Provider Adapter
 ```
 
-Harness Runtime 是 Hub 的 Execution subsystem，不新增第二个本地 daemon。
+> **Harness Runtime 是 Hub 的 Execution subsystem，不是另一个新的本地中枢 daemon。**
+
+除非后续真实隔离/性能要求证明需要拆服务，否则不要制造第二个本地 authority center。
 
 ---
 
-# 20. v0 不冻结的东西
+# 18. 本文冻结与不冻结什么
 
-这篇文档故意不冻结：
+## 冻结的语义边界
 
-- 数据库选型；
-- JSON / SQLite / event sourcing 的具体实现；
-- Provider Adapter API 细节；
-- Context Compiler 排序算法；
-- Page Health 各指标权重；
-- Promotion Policy 的最终 DSL；
-- Review Issue 全量 schema；
-- 多 Provider 切换策略。
+1. Run / Logical Thread / Provider Conversation / Browser Session 分离；
+2. 一个 Logical Thread v0 同时至多一个 current Provider Conversation；
+3. Run State 使用 `Committed` 与 `Working` 分层；
+4. Canonical Source 与 Committed State 不混词；
+5. Source Ref 将 origin / authority role / temporal status / claim kind 正交拆分；
+6. Epistemic Authority 与 Operational Authority 分开；
+7. Proposal 必须经过 Policy 才能成为 Authorized Delta；
+8. Reducer 负责 apply/invariant，不负责 authority；
+9. Execution Journal 是 crash recovery 的必要地基；
+10. Review 必须带 base state version。
 
-这些都应该在核心对象和 authority 经真实任务验证以后再定。
+## 仍然是 Candidate 的部分
 
----
-
-# 21. v0 Acceptance Criteria
-
-这套对象与 authority 模型至少应该让下面这些问题都有唯一答案：
-
-### 页面刷新
-
-Run 是否存在？——存在。  
-Conversation 是否存在？——存在。  
-Browser Session 是否存在？——旧的结束，新的建立。
-
-### Conversation Rollover
-
-Run 是否变化？——不变。  
-Logical Thread 是否变化？——不变。  
-Provider Conversation 是否变化？——新增一个，旧的标记 rolled_over。
-
-### Agent 提议重大 Decision
-
-是否直接写入 confirmed？——否。  
-先经过什么？——Authority / Promotion Policy。
-
-### 外部 Current Source 更新
-
-旧 State 是否自动变真？——否。  
-需要什么？——重新观察 Source，并更新相关 claim / freshness。
-
-### Browser 崩溃
-
-如何防止重复发送？——Execution Journal + provider observation + idempotent recovery。
-
-### Reviewer 返回旧问题
-
-是否直接应用？——否。  
-先检查什么？——base_state_version / snapshot freshness / target validity。
-
-如果这些语义仍然存在歧义，这个模型就还没有冻结资格。
+- Source Ref 各 enum 的最终取值；
+- 通用 authority resolver 是否需要实现；
+- Checkpoint 采用 snapshot 还是 version pointer；
+- Provider Conversation 的 provider-specific adapter schema；
+- Execution Journal 的最终 event model。
 
 ---
 
-# 22. 下一步
+# 19. 下一步
 
-对象和 authority 作为地基确定后，下一篇应进入：
+现在不再继续扩大 Object Model。
 
-> **State Delta + Reducer Contract v0**
+下一篇进入：
 
-重点正式化：
+> **《State Delta + Reducer Contract v0》**
 
-- State schema；
-- Delta operation vocabulary；
-- propose / authorize / apply 边界；
-- version conflict；
-- provenance；
-- reopen / supersede；
-- stale review handling；
-- reducer invariant。
+重点回答：
 
-之后再写：
+- Proposal 和 Authorized Delta 的边界；
+- operation taxonomy；
+- `base_state_version` / optimistic concurrency；
+- precondition；
+- Promotion Policy 如何作用到 operation；
+- provenance 怎样引用 Turn / Source Ref；
+- Reducer invariant；
+- conflict / stale / no-op 怎样表达；
+- 一次 Delta 是原子的还是部分应用；
+- Audit record 如何生成。
 
-1. Continuation State Machine v0；
-2. Execution Journal & Recovery Contract v0。
-
----
-
-## 当前最短结论
-
-> **Run 是工作；Logical Thread 是持续角色；Provider Conversation 是可替换载体；Browser Session 是可销毁执行表面。**
->
-> **Source 决定事实权威；Run State 决定工作状态；LLM 提议；Policy 授权；Reducer 执行；NOOS 记录。**
+这会是从语义模型进入可实现 Runtime Contract 的第一步。
