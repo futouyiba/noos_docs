@@ -9,12 +9,16 @@
 
 ## 当前主文档
 
-### Harness
+### Harness Runtime
 
 - [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md) — **Design Baseline v0.2**
 - [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Baseline v0.1**
 - [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Baseline v0.1**
 - [Continuation State Machine v0](docs/harness/continuation-state-machine.md) — **Design Candidate v0.1**
+
+### Multi-Conversation Orchestration
+
+- [Multi-Conversation Orchestration Role Model v0](docs/harness/multi-conversation-role-model.md) — **Design Candidate v0**
 
 ### Branding
 
@@ -66,8 +70,8 @@ Execution Journal（下一层）
 
 1. **Runtime Object Model & Authority Model v0** — **Baseline v0.1**
 2. **State Delta + Reducer Contract v0** — **Baseline v0.1**
-3. **Continuation State Machine v0** — **Candidate v0.1；当前进入三篇接口对审**
-4. **Execution Journal & Recovery Contract v0** — 对审通过后进入
+3. **Continuation State Machine v0** — **Candidate v0.1；待接口对审**
+4. **Execution Journal & Recovery Contract v0** — Continuation 对审通过后进入
 
 当前 Continuation 核心模型：
 
@@ -83,38 +87,54 @@ Execution Phase
   INGESTING_RESULT / SETTLING_STATE / MAINTENANCE
 ```
 
-几个重要边界：
+## Multi-Conversation Orchestration Candidate
+
+当前候选四种 Logical Thread Role：
 
 ```text
-Transient user typing
-→ runtime dispatch guard，不等于 durable PAUSED_USER
-
-WAIT
-→ no_action，不制造 durable Decision
-
-Page Health × Context Health
-→ 联合决定 Refresh / Compaction / Rollover
-
-Completion candidate
-→ 优先进入 completion governance，而不是先做非必要维护
+Control      总控：现在应该做什么？
+Design       设计：局部问题怎么解决？
+Review       审核：Candidate 哪里有问题？
+Integration  集成：如何吸收审核并形成统一 Candidate？
 ```
 
-Continuation Candidate 还提出需要与 Baseline 对审的对象：
+关键边界：
 
 ```text
-InterventionRequest
-HumanGateResolution
-ContinuationState
-ContinuationDecision
+Control Thread
+≠ Continuation Controller
+
+4 Role Types
+≠ 4 Provider Conversations
+
+所有角色修改 Run State
+→ Proposal → Policy → Reducer
 ```
 
-其中 Human Gate 允许两种 origin：
+默认生命周期：
 
 ```text
-PendingHumanGate
-├─ AuthorizationResult     # concrete State Proposal 只差 human authority
-└─ InterventionRequest     # 先需要选择/输入，尚无唯一 State mutation
+Control      → Run-scoped
+Design       → Topic / WorkItem-scoped
+Review       → Snapshot-scoped
+Integration  → Integration-cycle-scoped
 ```
+
+当前四角色闭环：
+
+```text
+Control
+→ Design
+→ immutable Design Snapshot
+→ orthogonal Review(s)
+→ Integration
+→ State Proposal(s)
+→ Policy / Reducer
+→ Applied Run State
+→ Control
+```
+
+`WorkItem` 当前只作为 Candidate correlation object，尚未进入 Runtime Object Model Baseline。
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
 
