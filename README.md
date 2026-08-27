@@ -14,6 +14,7 @@
 - [NOOS Harness：把 Chatbot 从长对话变成可持续运行的 AI 工作执行器](docs/harness/overview.md) — **Design Baseline v0.2**
 - [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Baseline v0.1**
 - [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Baseline v0.1**
+- [Continuation State Machine v0](docs/harness/continuation-state-machine.md) — **Design Candidate v0**
 
 ### Branding
 
@@ -36,7 +37,7 @@ Harness 当前最关键的控制原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-当前状态/证据语义：
+当前状态/证据/执行语义：
 
 ```text
 Canonical Source
@@ -53,25 +54,53 @@ EvidenceRef
 
 Proposal
 → durable + immutable 的最小逻辑状态事务请求
+
+ContinuationDecision
+→ durable 的“下一步应该做什么”
+
+Execution Journal（下一层）
+→ “这个决定后来实际发生了什么”
 ```
 
 ## 当前底层 Contract 顺序
 
 1. **Runtime Object Model & Authority Model v0** — **Baseline v0.1**
 2. **State Delta + Reducer Contract v0** — **Baseline v0.1**
-3. **Continuation State Machine v0** — **当前下一步**
-4. **Execution Journal & Recovery Contract v0**
+3. **Continuation State Machine v0** — **Candidate v0；当前进入接口对审**
+4. **Execution Journal & Recovery Contract v0** — Continuation 对审通过后进入
 
-接口已经冻结为：
+当前 Continuation 核心模型：
 
 ```text
-Durable Immutable Proposal
-→ Policy
-→ Durable AuthorizationResult
-→ Authorized Delta
-→ staged Reducer
-→ atomic State commit + ApplyResult
+Control Mode
+  RUNNING / PAUSED_USER / PAUSED_HUMAN /
+  BLOCKED_RECONCILIATION / COMPLETED
+
++
+
+Execution Phase
+  READY / DISPATCH_PENDING / AWAITING_PROVIDER /
+  INGESTING_RESULT / SETTLING_STATE / MAINTENANCE
 ```
+
+并且：
+
+```text
+ContinuationDecision
+→ Execution / Journal
+→ observed runtime fact
+→ next Continuation transition
+```
+
+Continuation Candidate 还提出一个需要和 Baseline 对审的最小泛化：
+
+```text
+PendingHumanGate origin
+├─ AuthorizationResult     # 已有 concrete State Proposal，只差 human authority
+└─ InterventionRequest     # 先需要 A/B choice / requirement input，尚无唯一 State mutation
+```
+
+Baseline 文档暂不因 Candidate 单方面改写；待接口对审后再决定是否吸收。
 
 `Harness Control Block` 只作为 bootstrap transport，不作为独立架构中心。
 
