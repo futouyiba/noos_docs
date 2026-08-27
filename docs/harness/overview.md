@@ -20,9 +20,9 @@ NOOS Harness 的目标不是再造一个 ChatGPT，而是把这些原本靠用�
 
 ---
 
-# 1. 真正要解决的，不是“自动点继续”
+# 1. 我们真正要解决的，不是“自动点继续”
 
-典型复杂设计流程更像：
+典型复杂设计流程更像这样：
 
 ```text
 提出问题
@@ -39,25 +39,27 @@ NOOS Harness 的目标不是再造一个 ChatGPT，而是把这些原本靠用�
   ↓
 继续
   ↓
-检查策略空间
+检查玩家策略空间
   ↓
 ……
 ```
 
-其中大量“继续”并不包含新的用户判断。用户真正需要介入的时刻通常只是：
+二三十轮并不罕见。
+
+其中大量“继续”并不包含新的用户判断。用户真正需要介入的时刻，通常只是少数几个：
 
 - 两个方案都合理，需要产品选择；
 - 需要改变任务范围；
-- 要推翻已经提交的重要决定；
+- 要推翻已经确认的重要决定；
 - 要执行外部写入或不可逆动作。
 
-因此，Auto Continue 只是表层需求。真正的问题是：
+因此，“自动 Continue”只是表层需求。真正的产品问题是：
 
-> **怎样让一项 AI 工作在用户不持续盯着页面的情况下，仍能向前推进、保持状态、处理故障，并在真正需要人类权威时暂停。**
+> **怎样让一项 AI 工作在用户不持续盯着页面的情况下，仍然能向前推进、保持状态、处理故障，并在真正需要人类权威时暂停。**
 
 ---
 
-# 2. 需求分成四层
+# 2. 需求可以分成四层
 
 ```text
 ┌──────────────────────────────────────┐
@@ -81,16 +83,24 @@ NOOS Harness 的目标不是再造一个 ChatGPT，而是把这些原本靠用�
 Vault / Wiki / Notion / Git / Files / Reference
 ```
 
-它们是 Runtime 的输入，不是 Runtime 本身。
+它们不是 Runtime 本身。
 
 ---
 
-# 3. 核心对象边界：Run ≠ Conversation ≠ Browser Session
+# 3. 最重要的对象边界：Run ≠ Provider Conversation ≠ Browser Session
+
+旧式 Chatbot 的默认心智模型是：
+
+```text
+Conversation = 这项工作
+```
+
+NOOS Harness 改成：
 
 ```text
 Run = 用户真正拥有的长期工作
-Logical Thread = Run 内一个持续角色 / 思考维度
-Provider Conversation = 外部平台保存的一段对话载体
+Logical Thread = 这项工作中的一个持续角色 / 思考维度
+Provider Conversation = 某个平台保存的一段对话载体
 Browser Session = 某次网页运行与挂接环境
 ```
 
@@ -100,9 +110,9 @@ Browser Session = 某次网页运行与挂接环境
 Run：World Condition → Fish Response
 │
 ├─ Logical Thread：Main Design
-│   ├─ Provider Conversation A
-│   ├─ Provider Conversation B
-│   └─ Provider Conversation C
+│   ├─ Provider Conversation A (ChatGPT)
+│   ├─ Provider Conversation B (ChatGPT)
+│   └─ Provider Conversation C (Claude)
 │
 ├─ Logical Thread：Domain Review
 │   └─ Provider Conversation D
@@ -111,119 +121,82 @@ Run：World Condition → Fish Response
     └─ Provider Conversation E
 
 Browser Session / Tab / Adapter Attachment
-    ↳ 只是某一时刻挂接其中一个 Conversation 的临时执行表面
+    ↳ 只是某一时刻承载上述 Conversation 的临时执行表面
 ```
 
 因此：
 
-- **Run：durable，NOOS-owned。**
-- **Logical Thread：durable，NOOS-owned。**
-- **Provider Conversation：replaceable carrier，通常 provider-persisted，并承担 provenance。**
-- **Browser Session / Adapter Attachment：disposable runtime resource。**
+- **Run 是 durable，NOOS-owned。**
+- **Logical Thread 是 durable，NOOS-owned。**
+- **Provider Conversation 是 replaceable carrier，通常由外部平台持久化，并且必须保留 provenance。**
+- **Browser Session / Adapter Attachment 才是真正 disposable 的 runtime resource。**
 
-v0 再增加一个简单但重要的 invariant：
+v0 再增加一个简单 invariant：
 
 > **一个 Logical Thread 同一时刻至多有一个 current Provider Conversation。**
 
-Reviewer fan-out 应建多个 Logical Thread，而不是让一个 Thread 同时拥有多个 current carrier。
+Reviewer fan-out 应通过多个 Logical Thread 实现。
 
-详细定义见 [`runtime-object-authority-model.md`](runtime-object-authority-model.md)。
+详细定义见：[`runtime-object-authority-model.md`](runtime-object-authority-model.md)。
 
 ---
 
-# 4. NOOS 拥有的不是“全部聊天记录”，而是结构化工作状态
+# 4. NOOS 拥有的不是“全部聊天记录”，而是 Working State
 
-只保存完整 conversation，不等于拥有上下文。
+只把完整 conversation 存下来，并不等于拥有上下文。
 
-真正需要的是：
+Harness 真正需要维护的是：
 
 ```text
 Raw Transcript
       ↓
 State Extraction / State Delta
       ↓
-Run State
+Run Working State
       ↓
 Context Compiler
       ↓
 Next Execution Projection
 ```
 
-信息可分三层：
+Run 内信息分三层：
 
-## 4.1 Durable / Committed Context
+### Durable Context
 
-长期稳定：
+Goal / Deliverable / Scope / Constraints / Committed Decisions / Rejected Decisions / 重要 provenance。
 
-- Goal / Deliverable；
-- Scope；
-- Constraints；
-- Committed Decisions；
-- Rejected Decisions；
-- 重要 Source Ref。
+### Working Context
 
-## 4.2 Working Context
+Hypotheses / Open Questions / Current Frontier / Active Branch / Reviewer Issues / 当前推导状态。
 
-当前阶段变化较快：
+### Ephemeral Context
 
-- Hypotheses；
-- Open Questions；
-- Current Frontier；
-- Active Branch；
-- Reviewer Issues；
-- 暂时有效的推导状态。
-
-## 4.3 Ephemeral Context
-
-只对最近几轮有意义：
-
-- 某个例子；
-- 临时反驳；
-- exploratory branch；
-- 最近几轮局部 reasoning trace。
+局部例子、临时反驳、exploratory branch、最近几轮局部 reasoning trace。
 
 原则不是“什么都不能忘”，而是：
 
-> **Raw Conversation 默认只是可回溯证据；只有被明确提升到 State 的内容才获得持续工作语义。**
-
-同时避免 `canonical` 语义重载：
-
-- **Canonical Source**：外部事实的 epistemic authority；
-- **Committed State**：Run 内已经正式提交的 constraint / decision / rejection。
+> **默认 Raw Conversation 只是可回溯证据；只有被明确提升到 State 的内容才获得持续工作语义。**
 
 ---
 
 # 5. Operational Authority 与 Epistemic Authority 必须分开
 
+Run State 可以决定“工作怎么继续”，但不能因为模型总结过一次，就变成所有外部事实的最终真理。
+
 ## Operational Authority
 
-决定：
-
-> 这个 Run 下一步如何执行？
-
-例如 Goal、Scope、Committed Decision、Open Question、Frontier、Next Action。
-
-这些由 Run State + Policy 管理。
+由 Run State 管理，例如：Goal、Scope、Committed Decision、Open Question、Frontier、Next Action。
 
 ## Epistemic Authority
 
-决定：
+外部事实由来源证据决定，例如：Notion Current Production Fact、GitHub 当前代码、正式规范、用户明确提供的 normative constraint。
 
-> 某个外部事实到底应该依据什么？
-
-例如：
-
-- Notion Current Production Fact；
-- GitHub 当前代码；
-- 用户明确表达的 preference / constraint；
-- 外部规范和正式文档。
-
-更合理的链路：
+链路应是：
 
 ```text
-Canonical / Current Source
+Source observation
       ↓
-Evidence Snapshot / Source Ref
+Evidence relationship
       ↓
 Run State interpretation
 ```
@@ -231,104 +204,93 @@ Run State interpretation
 而不是：
 
 ```text
-External Fact
+Source
 ↓
 模型总结一次
 ↓
 State 永远变成真理
 ```
 
-Source Ref 不再用一个混合 `authority` enum，而拆成正交维度：
+这里进一步区分两个对象：
 
-```yaml
-origin_kind:
-  # user | document | runtime | agent | external
+```text
+SourceRef
+= 我观察了什么、哪个版本、何时看到
 
-authority_role:
-  # canonical | supporting | reference
-
-temporal_status:
-  # current | historical | unknown
-
-claim_kind:
-  # fact | preference | constraint | decision | inference
-
-version:
-observed_at:
-freshness:
-content_fingerprint:
+EvidenceRef
+= 这个 Source observation 对哪个 Claim 提供什么证据，具有什么 authority role
 ```
 
-Authority resolver 还必须先看 `claim_kind`：
+因此 `claim_kind` / `authority_role` 属于 EvidenceRef，不属于 SourceRef 本体。
 
-- 对 preference / goal / scope 等 normative claim，用户明确表达通常高于 agent inference；
-- 对当前代码、Production 行为等 factual claim，应依据该领域的 canonical/current source，而不是固定 `user > document`。
+同时：
+
+> **Source observation 的内容身份必须 immutable。重新观察同一逻辑来源时创建新 SourceRef，而不是覆盖旧 observation。**
+
+这样旧 Decision 的 provenance 不会被今天的新版本篡改。
 
 一句话：
 
-> **Run State 是 operational working authority，不是所有事实的 ultimate source of truth。**
+> **Run State 是 working authority，不是所有事实的 ultimate source of truth。**
 
 ---
 
 # 6. Compaction 不是 Summary，而是 Stateful Compaction
 
-普通“帮我总结以上对话”很容易把 Committed、Hypothesis、Rejected、Open Question、Evidence 压成一篇流畅但失真的文字。
+普通“总结以上对话”很容易把 Confirmed、Hypothesis、Rejected、Open Question、Evidence 压成一篇流畅但失真的文字。
 
-真正需要：
+真正需要的是：
 
-> **Stateful Compaction：从最近一段轨迹中提取结构化 State Delta，并更新短期 Carry Context。**
+> **Stateful Compaction：从最近一段轨迹中提取结构化 Proposal / State Delta，并更新短期 Carry Context。**
 
 Raw Transcript 仍然归档，但退出 active working context。
-
-这让 Conversation Rollover 同时成为一次 Context Garbage Collection：旧 exploratory noise 可以退出下一段显式上下文，而已经提交的状态不会被自然语言摘要悄悄重写。
 
 ---
 
 # 7. LLM 不能直接重写 State：Proposal → Policy → Reducer
 
-正确链路：
+仅仅有 Reducer 还不够。
+
+Reducer 能保证 schema 和状态一致性，却不能回答：
+
+> “这个模型有没有资格把一个 hypothesis 直接升级为 Committed Decision？”
+
+因此正确链路是：
 
 ```text
-LLM / Tool / User / Source Observer
+LLM / Tool
    ↓
-State Delta Proposal
+Atomic Proposal
    ↓
 Authority / Promotion Policy
    ↓
-Authorized Delta
-   ↓
-Reducer
-   ↓
-State vN+1
-   ↓
-Audit Record
+Durable AuthorizationResult
+   ├─ requires_human → PendingHumanGate
+   ├─ denied
+   └─ authorized
+          ↓
+     Authorized Delta
+          ↓
+        Reducer
+          ↓
+       State vN+1
+          ↓
+       ApplyResult / Audit
 ```
 
-长期 invariant：
+原则：
 
 > **LLM proposes; Policy authorizes; Reducer applies; NOOS records.**
 
-Reducer 负责状态完整性，不负责决定谁有资格确认产品决策。
+`Proposal` 本身就是请求；Operation 描述期望发生的最终 State Transition。因此不再需要 `propose_decision` 这类二次“提议操作”。
 
-例如 agent 默认可被授权：
+v0 同时冻结：
 
-```text
-add hypothesis
-add evidence
-set frontier
-close exploratory question
-```
+> **Proposal atomicity → Authorization atomicity → Reducer atomicity。**
 
-通常需要 Human Gate：
+`requires_human` 由 Policy 创建 durable AuthorizationResult / PendingHumanGate；Reducer 不负责 Human Gate。
 
-```text
-product choice
-change scope
-authorize superseding committed decision
-external irreversible write
-```
-
-正式 operation / provenance / concurrency / atomicity 见 [`state-delta-reducer-contract.md`](state-delta-reducer-contract.md)。
+详细 Contract 见：[`state-delta-reducer-contract.md`](state-delta-reducer-contract.md)。
 
 ---
 
@@ -348,34 +310,21 @@ Context Compiler
 Purpose-built Context Projection
 ```
 
-Context Compiler 负责：
+Context Compiler 的价值在选择、裁剪、排序、维护 provenance 和控制 working-set 大小。
 
-1. 选择；
-2. 裁剪；
-3. 排序；
-4. provenance；
-5. working-set budget。
-
-这才是 NOOS 真正能影响 Chatbot 工作上下文的地方。
+Pending Proposal / Pending Human Gate 可以显式展示，但不能伪装成 Committed State。
 
 ---
 
 # 9. Context Control 的真实边界
 
-NOOS 无法完全控制 ChatGPT / Claude 的 context window，也不能可靠控制：
+NOOS 无法完全控制 ChatGPT / Claude 的 context window，也通常不能可靠读取 system prompt、account memory、provider-side summary、tool state 和 provider policy。
 
-- system prompt；
-- account memory；
-- project instruction；
-- provider-side summary；
-- tool state；
-- provider policy。
-
-因此不用“Hard Context Control”。
+因此不使用“Hard Context Control”。
 
 ## Same Conversation：Soft Guidance
 
-NOOS 可以重申 constraint、注入 relevant decision、检测 drift、给出 focused next action，但不能真正删除既有 history。
+NOOS 可以重申 constraint、注入 relevant decision、检测 drift、给出 focused next action，但无法真正删除既有 history。
 
 ## New Provider Conversation：Controlled Context Reset
 
@@ -384,19 +333,17 @@ Rollover 后，NOOS 可以更强地决定显式投喂的工作历史：
 ```text
 Harness Contract
 + Goal
-+ Committed / Working State
-+ Relevant Source Evidence
++ Applied State
++ Relevant Evidence
 + Carry Context
 + Next Action
 ```
-
-所以：
 
 > **Rollover 的价值不只是性能，而是获得更清晰的 explicit-history boundary。**
 
 ---
 
-# 10. Session Continuity：Refresh 与 Rollover 是两类手段
+# 10. Session Continuity：Refresh 与 Rollover 是两类不同治疗手段
 
 ## Safe Refresh
 
@@ -404,9 +351,7 @@ Harness Contract
 
 ## Conversation Rollover
 
-重建模型工作的显式上下文边界。Provider Conversation 更换，但 Logical Thread / Run 不变。
-
-因此：
+重建模型工作的显式上下文边界。Provider Conversation 更换，但仍属于同一个 Logical Thread / Run。
 
 ```text
 Performance degradation
@@ -416,9 +361,9 @@ Context / semantic pressure
 → Compact + Rollover
 ```
 
-Round Count 只能是 signal，不能成为“每 20 轮换房间”的死规则。
+Round Count 只能是 signal，不能变成固定阈值。
 
-页面卡顿的具体机理目前仍是 Candidate Mechanism：
+页面卡顿的具体机理目前只视为 Candidate Mechanism：
 
 > **instrument first, optimize second.**
 
@@ -426,7 +371,7 @@ Round Count 只能是 signal，不能成为“每 20 轮换房间”的死规则
 
 # 11. Continuation 不是“继续”，而是 Next Action Policy
 
-v0 动作保持很小：
+v0 动作可以保持很小：
 
 ```text
 CONTINUE_FOCUSED
@@ -437,7 +382,9 @@ ASK_HUMAN
 COMPLETE
 ```
 
-决策优先级建议：
+`CONTINUE_FOCUSED` 应表达当前真正 frontier，而不是裸发“继续”。
+
+推荐决策优先级：
 
 ```text
 1. User Activity
@@ -449,42 +396,37 @@ COMPLETE
 7. Progress
 ```
 
-“继续”应尽量被具体化为 focused next action，而不是让模型和自己无限互发“继续”。
-
 ---
 
 # 12. Recovery 不能只靠 Checkpoint：还需要 Execution Journal
 
-只有 `state_version` 和 `checkpoint_id` 不足以恢复：系统还必须知道上一条 action 是否已发送、provider 是否已观察、结果是否已返回、State Proposal 是否被接受。
+只有 `state_version` / `checkpoint_id` 不足以可靠恢复。
+
+系统必须区分：
+
+```text
+Provider side effect 是否发生
+Assistant result 是否观察到
+reconciliation 是否完成
+State Proposal / Delta 是否接受与应用
+```
 
 因此：
 
 ```text
-State Store       = 现在是什么
-Execution Journal = 刚才发生了什么
+State Store = 现在是什么
+Execution Journal = 执行过程中发生了什么
 ```
 
-但这里不冻结一个简单的 `planned → sent → observed → committed` 单轴状态机，因为以下是不同维度：
-
-```text
-Provider side effect happened
-Assistant result observed
-State proposal accepted/rejected
-```
-
-详细 dispatch / reconciliation / state application / idempotency 留给《Execution Journal & Recovery Contract v0》。
+具体 event/status 结构留给 `Execution Journal & Recovery Contract v0`，不在 Overview 中提前冻结成单轴状态机。
 
 ---
 
 # 13. Harness Control Block 只是 Bootstrap Transport
 
-MVP 可以让 Worker 在输出末尾追加机器可读 Control Proposal，以避免另起 controller model。
+MVP 可以让 Worker 在输出末尾追加机器可读 Control Proposal，但架构 contract 是 **Control Proposal**，HTML marker 只是一种 transport implementation。
 
-但 architectural contract 是：
-
-> **Control Proposal**
-
-HTML marker 只是一种 transport。未来可以来自 structured output、独立 controller、local evaluator、Shadow Controller 等。
+未来可替换为 provider structured output、独立 controller call、local evaluator 或 Shadow Controller。
 
 ---
 
@@ -495,27 +437,20 @@ Run State v37
       ↓
 Review Snapshot RS-008
       ↓
-Domain / Product / Runtime Reviewer
+Orthogonal Review Threads
       ↓
 Structured Review Issues
       ↓
-Owner Adjudication
+Owner / Policy Adjudication
       ↓
-State Delta
+Proposal / State Delta
 ```
 
-Review Issue 必须带：
-
-```yaml
-review_snapshot_id:
-base_state_version:
-```
-
-这样 Main State 推进后才能识别 stale review，而不是把旧审查意见直接写进当前状态。
+Review Issue 至少记录 `base_state_version` / `review_snapshot_id`，用于识别 stale review。
 
 ---
 
-# 15. Harness Runtime 属于 NOOS Hub
+# 15. Harness 与 NOOS Hub 的关系
 
 ```text
 NOOS Hub
@@ -530,152 +465,71 @@ Browser Shuttle
 
 > **Harness Runtime 是 Hub 的 Execution subsystem；Shuttle 是浏览器侧执行与连接层。**
 
-除非真实隔离/性能需求证明需要拆服务，否则不要再制造第二个本地 authority center。
+v0 不制造第二个本地 daemon。
 
 ---
 
 # 16. MVP 拆成五个可验证里程碑
 
-## M0 — Run Continuity Proof
+### M0 — Run Continuity Proof
 
-```text
-Take Over
-→ Create Run
-→ Save Checkpoint
-→ Refresh / Close Browser
-→ Resume
-```
+验证工作能否从网页生命周期中解耦。
 
-验证：工作能否从网页生命周期中解耦。
+### M1 — Controlled Rollover
 
-## M1 — Controlled Rollover
+验证 Stateful Compaction + Context Projection + Conversation Rollover 本身有没有价值。
 
-```text
-Conversation A
-→ Stateful Compaction
-→ Context Projection
-→ Conversation B
-→ Same Run
-```
+### M2 — Autonomous Continuation
 
-验证：External State + Compaction + Rollover 本身是否创造价值。
+加入 CONTINUE_FOCUSED / ASK_HUMAN / COMPLETE。
 
-## M2 — Autonomous Continuation
+### M3 — Performance Self-Healing
 
-加入：
+加入 performance telemetry / safe refresh / auto reattach。
 
-```text
-CONTINUE_FOCUSED
-ASK_HUMAN
-COMPLETE
-```
+### M4 — Reviewer Orchestration
 
-验证：用户不持续盯页面时是否仍有 substantive progress。
-
-## M3 — Performance Self-Healing
-
-加入 telemetry、safe refresh、auto reattach、refresh/rollover pressure。
-
-验证：页面性能问题能否变成 Runtime 自处理故障。
-
-## M4 — Reviewer Orchestration
-
-加入 review snapshot、orthogonal reviewer、issue merge、owner adjudication。
-
-验证：purpose-built reviewer projection 是否优于一个超长主 Chat 自我审查。
+加入 review snapshot / orthogonal reviewer / issue adjudication。
 
 ---
 
-# 17. Eval：拆开机制贡献
+# 17. Eval：必须拆开机制贡献
 
-实验分组：
+实验至少比较：
 
 ```text
 A. Long Chat
-   人工 Continue，不 Rollover
-
 B. Human-managed Rollover
-   人写 checkpoint，手工开新 Chat
-
 C. NOOS Controlled Rollover
-   Stateful Compaction + Projection + Rollover
-
 D. NOOS Autonomous Run
-   C + Action Policy
 ```
 
-观察：
+观察：Decision retention、Constraint violation、Rejected reopen、Repeated discussion、Open Question closure、Useful progress、Human intervention、Page performance、Recovery correctness。
 
-- Decision retention；
-- Constraint violation；
-- Rejected option reopen rate；
-- Repeated discussion；
-- Open Question closure；
-- Useful progress / round；
-- Human intervention；
-- Page performance；
-- Recovery correctness。
-
-真正实验时应尽量保持：
-
-```text
-相同任务起点
-相近 token / wall-clock budget
-独立 judge 或 human blind review
-```
-
-避免让执行 Harness 的同一个模型自己给 Harness 打分。
-
-同时保持严谨：长上下文研究只能提供 plausible mechanism；具体到 ChatGPT 网页长聊的重复、漂移、旧决策复活，仍需 NOOS 自己的真实任务验证。
+真实 Eval 还应保持相同任务起点、相近 budget，并尽量采用独立 judge / human blind review。
 
 ---
 
-# 18. Acceptance Criteria
+# 18. 当前 Acceptance Criteria
 
-### Continuity
-
-跨多个 Provider Conversation 后，用户仍认为是同一个 Run。
-
-### State Fidelity
-
-Committed constraint / decision 不因 compaction 或 rollover 静默变化。
-
-### Authority Safety
-
-模型不能无授权把 hypothesis 升级为 committed decision，或自行改变 scope / 执行外部不可逆写入。
-
-### Negative Memory
-
-已 rejected 的重要方案不会无条件复活。
-
-### Progress
-
-自主轮次能够关闭问题，而不是只增加文字。
-
-### Performance
-
-长 Run 不要求用户因为页面卡顿而手工重开工作。
-
-### Recovery
-
-刷新、关闭 tab、浏览器重启后可通过 Checkpoint + Execution Journal 幂等恢复。
-
-### Human Attention
-
-用户主要在真正 Authority Boundary 上被叫回来。
+- **Continuity**：跨多个 Provider Conversation 后仍是一项连续工作。
+- **State Fidelity**：Committed constraint / decision 不因 compaction/rollover 静默变化。
+- **Authority Safety**：未授权模型不能修改 Committed State / scope / external source。
+- **Negative Memory**：重要 rejection 不无条件复活。
+- **Progress**：自主轮次能关闭问题，而不是只增加文本。
+- **Performance**：长 Run 不要求用户手工维护卡顿页面。
+- **Recovery**：刷新、关闭 tab、重启后能幂等恢复。
+- **Human Attention**：只在真正 Authority Boundary 上叫回用户。
 
 ---
 
-# 19. NOOS 因此形成两个平面
+# 19. NOOS 整体架构：两个平面
 
 ```text
 NOOS
 │
 ├─ Knowledge / Context Plane
-│  ├─ Vault
-│  ├─ Crystal
-│  ├─ Handoff
-│  ├─ Artifact
+│  ├─ Vault / Crystal / Handoff / Artifact
 │  ├─ Reference
 │  └─ Context Broker
 │
@@ -683,6 +537,7 @@ NOOS
    └─ Harness Runtime
       ├─ Runtime Object Model
       ├─ Run State
+      ├─ SourceRef / EvidenceRef
       ├─ Authority / Promotion Policy
       ├─ State Delta + Reducer
       ├─ Context Compiler
@@ -693,15 +548,13 @@ NOOS
       └─ Provider Adapters
 ```
 
-此前 NOOS 的主要命题：
+此前 NOOS 的主要命题是：
 
 > **NOOS owns user context.**
 
-现在补上的第二个命题：
+现在补上的第二个命题是：
 
 > **NOOS owns the continuity of AI work.**
-
-这是对原 Context Hub 的补全，不是战略转向。
 
 ---
 
@@ -709,41 +562,37 @@ NOOS
 
 目前冻结：
 
-1. **Run 是核心 durable object。**
-2. **Provider Conversation 是 replaceable carrier，不是 disposable Browser Session。**
-3. **一个 Logical Thread v0 同时至多一个 current Provider Conversation。**
-4. **Raw Conversation 不是 Current State。**
-5. **Committed State 与 Canonical Source 分词。**
-6. **Stateful Compaction 优于普通 Summary。**
-7. **Context Store 与 Context Projection 分离。**
-8. **Operational Authority 与 Epistemic Authority 分离。**
-9. **Source Ref 的 origin / authority role / temporal status / claim kind 正交拆分。**
-10. **LLM proposes；Policy authorizes；Reducer applies；NOOS records。**
-11. **Refresh 与 Rollover 分开。**
-12. **Recovery 需要 Execution Journal 与 idempotency。**
-13. **Reviewer Orchestration 建立在 Harness 之上。**
-14. **Harness Runtime 属于 NOOS Hub 的 Execution subsystem。**
-15. **必须通过真实任务 Eval 验证。**
+1. Run 是核心 durable object。
+2. Provider Conversation 是 replaceable carrier；Browser Session 才是 disposable。
+3. 一个 Logical Thread 同时至多一个 current Provider Conversation。
+4. Raw Conversation 不是 Current State。
+5. Stateful Compaction 优于普通 Summary。
+6. Context Store 与 Context Projection 分离。
+7. Operational Authority 与 Epistemic Authority 分离。
+8. SourceRef 与 EvidenceRef 分离；Source ≠ Claim。
+9. Source observation 内容身份 immutable。
+10. Committed State 与 Canonical Source 使用不同语义。
+11. LLM proposes；Policy authorizes；Reducer applies；NOOS records。
+12. Proposal / Authorization / Reducer 在 v0 使用同一事务边界。
+13. Human Gate 由 Policy durable 持有，不由 Reducer产生。
+14. Refresh 与 Rollover 分开。
+15. Recovery 需要 Execution Journal 与 idempotency。
+16. Reviewer Orchestration 建立在 Harness 之上。
+17. Harness Runtime 属于 NOOS Hub 的 Execution subsystem。
+18. 必须通过真实任务 Eval 验证 Harness。
 
 ---
 
-# 21. 下一步 Contract 顺序
+# 21. 下一步文档顺序
 
-现在停止继续打磨 Overview，用实现级 Contract 和 Eval 逼出真实问题。
+当前顺序：
 
-1. **Runtime Object Model & Authority Model v0** — Design Candidate  
-   [`runtime-object-authority-model.md`](runtime-object-authority-model.md)
+1. **Runtime Object Model & Authority Model v0** — Candidate
+2. **State Delta + Reducer Contract v0** — Candidate
+3. **Continuation State Machine v0** — 待前两篇接口对审通过后进入
+4. **Execution Journal & Recovery Contract v0**
 
-2. **State Delta + Reducer Contract v0** — Design Candidate  
-   [`state-delta-reducer-contract.md`](state-delta-reducer-contract.md)
-
-3. **Continuation State Machine v0** — Next  
-   Continue / Human Gate / Complete / Compact / Rollover / Refresh。
-
-4. **Execution Journal & Recovery Contract v0**  
-   Dispatch / observed result / reconciliation / state application / idempotency。
-
-`Control Block` 只作为 Continuation Runtime 的 bootstrap transport，不单独占据架构中心。
+`Control Block` 只作为 bootstrap transport，不单独占据架构中心。
 
 ---
 
