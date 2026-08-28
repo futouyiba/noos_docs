@@ -3,7 +3,7 @@
 > 中文工作名当前首选候选：**怒思**  
 > 当前重点：NOOS Harness / Execution Plane  
 > 当前基线：Harness Design Baseline v0.2  
-> 日期：2026-08-27
+> 日期：2026-08-28
 
 本仓库用于沉淀 NOOS 的产品需求、架构决策、Harness Runtime、上下文管理与跨工具工作流设计。
 
@@ -15,6 +15,10 @@
 - [Runtime Object Model & Authority Model v0](docs/harness/runtime-object-authority-model.md) — **Design Baseline v0.1**
 - [State Delta + Reducer Contract v0](docs/harness/state-delta-reducer-contract.md) — **Design Baseline v0.1**
 - [Continuation State Machine v0](docs/harness/continuation-state-machine.md) — **Design Candidate v0.1**
+
+### Cross-Contract Baselines
+
+- [XCONTRACT-03 — Immutable Review Target Semantics](docs/harness/contracts/xcontract-03-immutable-review-target.md) — **Committed Contract Baseline；normative v5 @ `39c7a9b755567792e343bec94a7dd8725c5d37a5`**
 
 ### Multi-Conversation Orchestration
 
@@ -70,8 +74,9 @@ Execution Journal（下一层）
 
 1. **Runtime Object Model & Authority Model v0** — **Baseline v0.1**
 2. **State Delta + Reducer Contract v0** — **Baseline v0.1**
-3. **Continuation State Machine v0** — **Candidate v0.1；待接口对审**
-4. **Execution Journal & Recovery Contract v0** — Continuation 对审通过后进入
+3. **XCONTRACT-03 Immutable Review Target Semantics** — **Committed Contract Baseline**
+4. **Continuation State Machine v0** — **Candidate v0.1；仍有独立接口工作**
+5. **Execution Journal & Recovery Contract v0** — Continuation 对审通过后进入
 
 当前 Continuation 核心模型：
 
