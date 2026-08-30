@@ -339,6 +339,8 @@ The extension background service worker is event-driven and may be terminated wh
 - persist tab/conversation/role/Work Item bindings outside transient globals;
 - design all browser events and messages to be restart-safe.
 
+Chrome extension APIs support observing and manipulating tabs and injecting scripts across matching pages; this supports multiple concurrently managed ChatGPT tabs rather than only the currently active tab. The architecture should still tolerate tab discard/freeze/reload and service-worker restart. 
+
 ### 9.2 Recommended v0 UX
 
 Prefer **one dedicated Chrome window containing multiple Harness-managed ChatGPT tabs** because it offers:
@@ -352,7 +354,282 @@ Separate windows should remain supported, especially when the user wants visual 
 
 ---
 
-## 10. Current proposed runtime rhythm
+## 10. Browser Harness lifecycle: separate Carrier Runtime from Logical Control
+
+Do not collapse browser execution state and reasoning-workflow state into one `tab_state`.
+
+### 10.1 Carrier Runtime State
+
+Purely observable / operational:
+
+```text
+ATTACHING
+READY
+GENERATING
+STABILIZING
+SUSPENDED
+RECOVERING
+BROKEN
+CLOSED
+```
+
+Approximate semantics:
+
+- `ATTACHING`: tab exists, but content script / provider-conversation identity is not yet established;
+- `READY`: page is stable, input surface is usable, and generation is not running;
+- `GENERATING`: ChatGPT is actively producing output;
+- `STABILIZING`: generation, fork, navigation, or bootstrap just completed but URL / conversation identity / DOM still needs confirmation;
+- `SUSPENDED`: tab has been frozen/discarded or otherwise cannot currently execute reliably;
+- `RECOVERING`: Harness is refreshing/reactivating/rebinding the carrier;
+- `BROKEN`: recovery failed or the page can no longer be controlled reliably;
+- `CLOSED`: carrier no longer exists.
+
+This layer should be derived from browser / DOM / extension events rather than semantic inference.
+
+### 10.2 Logical Thread Control State
+
+Workflow control, orthogonal to browser state:
+
+```text
+CONTINUE
+WAIT_REVIEW
+WAIT_HUMAN
+WAIT_EVIDENCE
+WAIT_WORKER
+BOUNDARY_REACHED
+```
+
+This state should come from an explicit Agent/Human/Harness-declared boundary, not from DOM heuristics.
+
+### 10.3 GO eligibility
+
+The minimal rule is:
+
+```text
+Carrier == READY
+AND
+ThreadControl == CONTINUE
+→ GO allowed
+```
+
+Examples:
+
+| Carrier Runtime | Logical Control | Harness action |
+|---|---|---|
+| READY | CONTINUE | GO allowed |
+| GENERATING | CONTINUE | wait |
+| READY | WAIT_REVIEW | dispatch/wait Review |
+| READY | WAIT_HUMAN | surface Human gate |
+| SUSPENDED | any active control | recover carrier |
+| BROKEN | any | report/rebind |
+| READY | BOUNDARY_REACHED | stop |
+
+Provider UI readiness does **not** imply semantic permission to continue.
+
+---
+
+## 11. Fork lifecycle
+
+A newly opened tab is not yet a valid worker conversation.
+
+Conceptual lifecycle:
+
+```text
+Parent READY
+↓ Fork
+Child tab created
+↓
+ATTACHING
+↓ bootstrap interaction if required
+provider conversation identity begins to exist
+↓
+STABILIZING
+↓ resolve URL/title/conversation-list identity
+↓ optional refresh/rebind validation
+↓
+READY
+```
+
+A fork should be considered stable only after the Harness can reliably re-identify the child conversation after navigation/reload/rebind, rather than merely because a tab was opened.
+
+The exact detection method is provider-specific implementation detail and should not become product semantics.
+
+---
+
+## 12. Sparse Goal Re-anchor as a lifecycle hook
+
+A periodic re-anchor is a safety mechanism, not a semantic supervisor.
+
+Maintain a cheap operational counter such as:
+
+```text
+design_turns_since_anchor
+```
+
+A substantive Design turn may be defined operationally as one complete Design-Agent generation cycle initiated by normal continuation, not by semantic content scoring.
+
+Candidate policy:
+
+```text
+re-anchor if:
+    lifecycle_boundary_occurred
+OR
+    design_turns_since_anchor >= N
+```
+
+Event-triggered re-anchors should take precedence over rigid counting.
+
+Potential lifecycle triggers include:
+
+- review result returned;
+- compaction;
+- rollover;
+- human scope correction;
+- sedimentation return;
+- long worker branch completion before resuming the main Design Thread.
+
+`N` should remain experimental. A starting value around 8 substantive turns is plausible, within a broader 6–12 range.
+
+The re-anchor itself should not request a visible alignment report.
+
+---
+
+## 13. Blocker Declaration Contract
+
+The Harness only needs to know one semantic-control fact:
+
+> Can this thread continue autonomously under its current Work Item, Role, Goal, and Scope?
+
+The Harness does **not** need to know what exact semantic step the Agent intends to perform next.
+
+### 13.1 Normal continuation is implicit
+
+`CONTINUE` should be the default and need not appear in every Agent response.
+
+Do not append mandatory control metadata such as:
+
+```text
+NEXT_STATE: CONTINUE
+GOAL_ALIGNED: YES
+```
+
+to every normal answer.
+
+That would create protocol noise and risk shaping the natural reasoning output.
+
+### 13.2 Only exceptional boundaries need an explicit signal
+
+Minimum candidate blocker vocabulary:
+
+```text
+NEEDS_REVIEW
+NEEDS_HUMAN
+NEEDS_EVIDENCE
+NEEDS_EXTERNAL_WORKER
+BOUNDARY_REACHED
+```
+
+These signals only answer why autonomous `GO` should stop. They must not encode the semantic next task.
+
+Avoid expanding into categories such as `NEXT_ARCHITECTURE`, `NEXT_RESEARCH`, `NEXT_DOC_EDIT`, etc.; that would recreate semantic orchestration inside NOOS.
+
+### 13.3 Natural explanation + machine control signal
+
+When a boundary is reached, the Agent should still explain the reason naturally to the human.
+
+Separately, the runtime should expose a tiny machine-readable signal when transport permits:
+
+```text
+NEEDS_REVIEW
+```
+
+or equivalent sidecar metadata.
+
+The machine signal is not the explanation. NOOS should not parse the prose to recover meaning when a stable signal is available.
+
+### 13.4 Transport independence
+
+The semantic contract is:
+
+> exceptional continuation boundaries can be signaled out-of-band.
+
+The contract is **not**:
+
+> a specific visible marker must appear in Markdown.
+
+Transport options may evolve:
+
+1. native tool-call / sidecar metadata if the runtime eventually exposes one;
+2. extension-recognizable hidden or minimally rendered protocol block as an interim browser transport;
+3. Human fallback when no reliable machine signal is available.
+
+If a browser-encoded marker is used in v0, it is a transport workaround rather than long-term product semantics.
+
+### 13.5 Fail-open vs fail-closed
+
+A missing blocker signal is dangerous only in future autonomous Run Mode.
+
+Therefore:
+
+- **Step Mode v0:** absence of a blocker signal is acceptable because the Human still triggers the next `GO`;
+- **Run Mode later:** repeated autonomous `GO` requires a stronger stop-signal contract and should fail conservatively when control-state confidence is insufficient.
+
+This sequencing allows the Harness to validate browser lifecycle automation before relying on perfect semantic stop signaling.
+
+---
+
+## 14. Step Mode before autonomous Run Mode
+
+### Step Mode v0
+
+```text
+Agent turn completes
+↓
+Carrier READY
+↓
+Human / explicit Harness GO
+↓
+next Agent turn
+```
+
+NOOS may automate:
+
+- carrier observation;
+- fork stabilization;
+- tab/role bindings;
+- periodic re-anchor;
+- Review/Sedimentation worker creation;
+- recovery.
+
+But GO remains explicitly triggered.
+
+### Later Run Mode
+
+```text
+READY + CONTINUE
+→ GO
+→ READY + CONTINUE
+→ GO
+→ ...
+```
+
+until:
+
+```text
+WAIT_REVIEW
+WAIT_HUMAN
+WAIT_EVIDENCE
+WAIT_WORKER
+BOUNDARY_REACHED
+TURN_BUDGET
+ERROR
+```
+
+Do not make autonomous Run Mode a prerequisite for the first self-bootstrapping slice.
+
+---
+
+## 15. Current proposed runtime rhythm
 
 ```text
 Design Thread
@@ -378,11 +655,15 @@ write durable memory
 main Design Thread remains clean
 
 If Agent declares Independent Review needed:
-    spawn/fork Reviewer
+    NEEDS_REVIEW
+    ↓
+spawn/fork Reviewer
     ↓
 review exact target
     ↓
 return Review result to Design Thread
+    ↓
+re-anchor
     ↓
 GO / revise
 ```
@@ -391,7 +672,7 @@ NOOS does not need to understand the semantic content of each step. It manages t
 
 ---
 
-## 11. What v0 should explicitly avoid
+## 16. What v0 should explicitly avoid
 
 Do not require:
 
@@ -403,22 +684,25 @@ Do not require:
 - mandatory inline Capture markers;
 - a heavy plan graph;
 - a supervisor agent as a prerequisite for continuation;
-- a provider-independent document mutation engine.
+- a provider-independent document mutation engine;
+- mandatory per-turn control-signal tails;
+- autonomous Run Mode before the stop-signal contract is validated.
 
 ---
 
-## 12. Current open product questions
+## 17. Current open product questions
 
-1. What is the initial experimental interval for periodic Goal re-anchor, and should the primary trigger be turn-count, context-pressure, or lifecycle events?
-2. What exact browser-side signal defines a "substantive Design turn" for interval counting?
-3. What minimum status signal must the Design Agent expose when it needs Review / Human / Evidence rather than another GO?
-4. How should fork stabilization be detected robustly in ChatGPT Web when a new branch may require an initial message, URL stabilization, refresh, and conversation-list resolution?
+1. What exact DOM/browser observations are sufficient to infer `READY`, `GENERATING`, `STABILIZING`, and `BROKEN` robustly on ChatGPT Web?
+2. What provider-specific evidence is sufficient to declare a forked conversation stable and re-identifiable?
+3. What interim transport should carry exceptional blocker signals without polluting visible reasoning output?
+4. How should the Human fallback work when a blocker signal cannot be machine-detected reliably?
 5. Should Sedimentation always fork from the current Design Thread, or may NOOS sometimes reuse a dedicated long-lived Sedimentation Thread?
 6. What minimal operation receipt should be recorded after Agent-driven external document writes?
+7. At what point, after Step Mode is validated, is autonomous Run Mode justified?
 
 ---
 
-## 13. Working north-star
+## 18. Working north-star
 
 > NOOS should replace the user's repetitive conversation coordination work while preserving ChatGPT as the primary semantic reasoning runtime.
 
