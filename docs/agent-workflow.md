@@ -38,12 +38,19 @@
 
 1.2 reviewer 的独立性由**行为与执行上下文**共同定义，不由会话或
     模型身份定义（模型可以相同）：
-    (a) 审核须运行在与实现不同的 review 执行上下文中，且不承担
-        实现修改职责。合格形态：独立会话；或实现会话内 spawn 的
-        reviewer subagent——其任务书证伪导向、不修改被审分支、
-        自行读取与亲跑，且该形态在 provenance 中如实披露。实现
-        者本人在实现上下文内自审只构成 author verification，
-        不作为门禁证据。
+    (a) 审核须运行在**独立 review 执行上下文**中。"执行上下文"
+        指一次 agent 运行的上下文窗口（任务书、可见对话记忆与
+        工具集），不按会话进程计粒度。合格形态：独立会话；或
+        实现会话内 spawn 的 reviewer subagent，且满足全部能力
+        条件：任务书独立成文且证伪导向；对被审分支与实现工作区
+        **无写入能力**（以只读工具集 spawn；无法在 harness 层
+        剥离写入工具时至少不得持有 Edit/Write 类工具，Bash 不得
+        用于改写被审工作区）；自行读取 spec/diff、亲跑验证；
+        provenance 以 `in-session subagent` 记号披露（B.3）。
+        已知残余：subagent 的任务书与运行时环境由实现方塑形，
+        本条对该通道不提供机械防护，发现塑形造假按 B.3 伪造条款
+        处置。实现者本人在实现上下文内自审只构成 author
+        verification，不作为门禁证据。
     (b) 任务书证伪导向，不预述预期结论；
     (c) 亲跑关键命令并引用实际输出，不采信实现者转述；
     (d) 对核心不变量做退化（变异）验证。
@@ -57,8 +64,9 @@
 1.4 审核深度分级，按 diff 的 **runtime risk 与 authority /
     contract risk 两者中较高者**判定，而非实现者自述：源码、
     脚本、CI workflow、构建配置、lockfile、生成代码一律视为
-    运行代码，按 1.2 全项；触及 Authority / 契约 / 权威基线文件
-    的改动（即使位于 docs/ 下）同样按 1.2 全项，不得以文档路径
+    运行代码，按 1.2 全项；触及 Authority 文件（指各仓库声明为
+    权威基线 / 契约的文档，含本规范自身与 SHA 锚定的契约文件）
+    的改动，即使位于 docs/ 下，同样按 1.2 全项，不得以文档路径
     降级；其余纯文档可降级为引用核对；混合 diff 按其中最高档。
     初审分级由实现者申报，reviewer 与 integrator 均可改判升格。
 
@@ -82,15 +90,19 @@
     原文引用**（裁定、否决、条件等改变可行域的句子），
     禁止转述改义或代拟 designer 结论。
 
-2.4 proposal 的作者不得裁定自己的 proposal。
+2.4 proposal 的作者不得裁定自己的 proposal。本条的"proposal
+    作者"指提出待裁问题的实现方或 reviewer；designer 自己先前
+    的要求被异议回流后的重裁（第 2.5 节）不构成"裁定自己的
+    proposal"。
 
 2.5 冲突优先级：语义与契约（系统应当是什么）归 epic designer；
     实现证据（测试是否失败、验证是否通过）归 reviewer，designer
     不得裁定"失败证据算通过"。reviewer 若因技术异议拒绝 designer
     的要求，异议连同证据回流 designer 重裁；designer 可修改或
-    撤回要求，但不得否决证据本身。重裁后仍冲突的，升级人类
-    操作者终裁，不得要求 reviewer 执行与其亲跑证据相矛盾的指令。
-    不得僵持，不得互相覆盖。
+    撤回要求（撤回以新的 `DESIGN:` 评论明示；REJECTED 及其关单
+    副作用仅适用于 proposal issue），但不得否决证据本身。重裁后
+    仍冲突的，升级人类操作者终裁，不得要求 reviewer 执行与其
+    亲跑证据相矛盾的指令。不得僵持，不得互相覆盖。
 
 ## 3. 角色分工：orchestrator 委派
 
@@ -148,10 +160,10 @@ bootstrap**（ChatGPT Project Instructions 等）只放压缩不变式，
 AGENTS.md** 只保存仓库事实与触发映射投影。三层不一致时，以本
 文件为准；平台层与仓库层不得自行演化为第二真源。
 
-## 7. Bootstrap
+## 7. 版本激活
 
-v0.2 与 v0.3.0 均由人类操作者授权、经独立 reviewer 审核后生效；epic
-designer 可按第 2 节对后续修订作出裁定。
+v0.2、v0.3.0 与 v0.3.1 均由人类操作者授权、经独立 reviewer 审核后
+生效；epic designer 可按第 2 节对后续修订作出裁定。
 
 ## 附录 A：可选 CI 门禁
 
@@ -196,7 +208,7 @@ head SHA"模式（如包含 `review` 链接与 7–40 位十六进制 SHA），
 | `implement #N`（缩写 `impl`） | 实现任务 | 读任务 issue 全部评论（含裁定引用）；独立 branch / worktree 实现；最小充分验证跑绿后提交；需裁定的先走第 2 节（proposal + `design` 触发）；建 draft PR（body 可暂空）→ 委派独立 review（`review PR#M`，委派记录见 B.3）→ APPROVE 后补 PR body：review 证据链接 + exact head（第 1.3 节）；任务 issue 回帖 `IMPLEMENTED: PR#M`。 |
 | `review PR#N` | reviewer | 线程无有效 `REVIEW:` 标记时为全量审，否则取最新有效标记的 head 与当前 head 比对：相同为重看，不同为增量复审（第 1.3 节）；按第 1.4 节分级；亲跑关键命令引用实际输出、核心不变量做变异验证（第 1.2 节）；结论评论到 PR，首行 `REVIEW: <verdict> @ <head-sha>`、次行 provenance（B.3），findings 各带 severity 与证据；不改代码，异议走第 2.5 节。 |
 | `design <ref>` | epic designer | ref 为 PR 或携带 proposal 的 issue；读 diff 与 proposal / 契约文件；结论评论到 PR，首行 `DESIGN: <verdict>`（决定性表述原文引用，第 2.3 节）、次行 provenance；对 reviewer 技术异议的重裁（第 2.5 节）同此。已合并 PR 上的 findings 不要求原 PR 改动，由 orchestrator 以新 `dispatch` 接续。 |
-| `merge PR#N`（接受 `integrate`） | integrator | 核对 PR body 的 review 证据链接与 exact head，逐项验证所链标记评论的 provenance 与委派记录（第 4.2 节、B.3）→ review intake 留档 → 合并 → 验证（typecheck / 测试 / 发布脚本）与构建、部署（按仓库 AGENTS.md）→ PR 回帖 `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>`，并关闭任务 issue → 通知实现任务与 orchestrator。 |
+| `merge PR#N`（接受 `integrate`） | integrator | 核对 PR body 的 review 证据链接与 exact head（＝合并时 PR 当前 head，见 B.3），逐项验证所链标记评论的 provenance 与委派记录（第 4.2 节、B.3）→ review intake 留档 → 合并 → 验证（typecheck / 测试 / 发布脚本）与构建、部署（按仓库 AGENTS.md 适用项）→ PR 回帖 `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>` → 按第 4.2 节复查任务 issue 验收标准后决定是否关闭 → 通知实现任务与 orchestrator。 |
 | `fix PR#N`（接受 `address`） | 实现任务 | 拉 PR 上全部未处理 `REVIEW:` / `DESIGN:` findings；逐条修复，或携证据申诉（第 1.3 节）；push 后由 `review` 的增量判定接续复审。 |
 
 共享频道（任务 issue / PR 评论）中寻址用 `role:` 前缀 + 暗号，如
@@ -214,9 +226,9 @@ head SHA"模式（如包含 `review` 链接与 7–40 位十六进制 SHA），
   偶发数字（行号、计数等）不构成指针。
 - 多个动词与同一指针共现、且分属不同接收角色时（如"先修复再
   复审 PR 42"＝`fix` 后 `review`），拆分为多个 stage：由
-  orchestrator / 路由方在上一个 stage 完成后再派发下一个，不得
-  在同一执行上下文内顺接执行（否则破坏第 1.2 节的审核独立性）；
-  单角色内的多动词按语序执行。
+  orchestrator 或 watcher 在上一个 stage 完成后再派发下一个，
+  不得在同一执行上下文内顺接执行（否则破坏第 1.2 节的审核
+  独立性）；单角色内的多动词按语序执行。
 - 大小写无关；全角字母与数字归一为半角；STT 常见的字母间空格
   连写（`P R 42` → `PR 42`）。跨仓库语境用全限定
   `<owner>/<repo>#N`。
@@ -233,8 +245,10 @@ head SHA"模式（如包含 `review` 链接与 7–40 位十六进制 SHA），
 标记写在评论**首行**，语法 `<MARKER>: <value>`，需要锚定 commit
 时行末后缀 ` @ <sha>`。**第二行为 provenance 行**，格式
 `（<角色>: <交付方式>[, 委派: <来源>]）`，如 `（rev: 直评, 委派:
-orch）`、`（rev: relayed by impl, 委派: impl）`；无 provenance 行
-的标记为无效标记，不参与推导。
+orch）`、`（rev: relayed by impl, 委派: impl）`、`（rev: in-session
+subagent, 委派: impl）`（后者为第 1.2 节 (a) 定义的会话内独立
+reviewer subagent 形态）；无 provenance 行的标记为无效标记，不参与
+推导。
 
 - `REVIEW: APPROVE|REQUEST_CHANGES @ <head-sha>` — reviewer 结论。
 - `DESIGN: APPROVE|REQUEST_CHANGES|REJECTED` — designer 结论；
@@ -245,18 +259,21 @@ orch）`、`（rev: relayed by impl, 委派: impl）`；无 provenance 行
   （provenance 行如 `（impl: 直评）`）。
 - `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>` —
   integrator 在 PR 上的落地记录（provenance 行如
-  `（intg: 直评, 委派: 人）`）；同时关闭对应任务 issue。
+  `（intg: 直评, 委派: 人）`）。任务 issue 的关闭按第 4.2 节验收
+  复查执行，不是本标记的自动副作用。
 
-**委派记录**：任何角色的委派（orchestrator 或人发起）在任务 issue
-或 PR 线程留一条先于结论标记的评论（如 `rev: review PR#N`、
-`intg: merge PR#N`、`impl: implement #N`）。
+**委派记录**：任何角色的委派（orchestrator、实现任务或人发起）
+在任务 issue 或 PR 线程留一条先于结论标记的评论（如 `rev: review
+PR#N`、`intg: merge PR#N`、`impl: implement #N`）。
 
 **推导规则**：状态重建（增量基线、是否已落地）只取带 provenance
 且能对上委派记录的最新标记；无有效标记视为全量审。
 
 **门禁不依赖推导**：合并使用的证据永远是 PR body 显式引用的证据
-链接 + exact head（第 1.3 节），由 integrator 按第 4.2 节逐项核对
-（链接指向的标记评论带 provenance，且与委派记录一致）。单一
+链接 + exact head（第 1.3 节），由 integrator 按第 4.2 节逐项核对，
+且**三者必须一致**：标记评论行末 `@ <sha>` ＝ PR body 引用的
+exact head ＝ 合并时 PR 当前 head（任一不匹配即不得合并）；
+链接指向的标记评论须带 provenance、且与委派记录一致。单一
 GitHub 账号下评论作者无法机械核验；伪造标记或委派记录等同伪造
 review 证据，按第 1 节门禁绕过处理，升级人类操作者终裁。
 
@@ -268,13 +285,14 @@ watcher 时，标记只是持久邮箱（durable mailbox）——唤醒能力属
 Review API 的 Approval；多 agent 共用一个 GitHub 身份时，账号层
 无法证明审核独立性，机械防伪边界见上文"门禁不依赖推导"段。
 
-### B.4 Bootstrap
+### B.4 上下文装载（bootstrap）
 
 暗号生效的前提是展开文本已在目标会话的加载上下文中：Claude Code
 侧由各仓库 AGENTS.md 内联携带压缩暗号表（以本附录为准）；ChatGPT
-侧一次性将本附录或其压缩版置入 custom instructions / 项目知识。
-connector 指 designer 平台配置的 GitHub 访问连接器，代表 designer
-读写仓库评论。
+等平台侧置入 `docs/agent-workflow-bootstrap.md`（压缩不变式投影，
+见第 6 节三层结构；暗号表的仓库投影属第三层 AGENTS.md，不进平台
+层）。connector 指 designer 平台配置的 GitHub 访问连接器，代表
+designer 读写仓库评论。
 
 ---
 
