@@ -198,21 +198,23 @@ head SHA"模式（如包含 `review` 链接与 7–40 位十六进制 SHA），
 标记写在评论**首行**，语法 `<MARKER>: <value>`，需要锚定 commit
 时行末后缀 ` @ <sha>`。**第二行为 provenance 行**，格式
 `（<角色>: <交付方式>[, 委派: <来源>]）`，如 `（rev: 直评, 委派:
-orch）`、`（rev: relayed by impl, 会话内行为独立 reviewer）`；
-无 provenance 行的标记为无效标记，不参与推导。
+orch）`、`（rev: relayed by impl, 委派: impl）`；无 provenance 行
+的标记为无效标记，不参与推导。
 
 - `REVIEW: APPROVE|REQUEST_CHANGES @ <head-sha>` — reviewer 结论。
 - `DESIGN: APPROVE|REQUEST_CHANGES|REJECTED` — designer 结论；
   `REJECTED` 同时关闭 proposal issue。经 connector 发出时
   provenance 写 `（des: via connector, 委派: <来源>）`，经人中继
   时写 `（des: relayed by <交付来源>）`（第 2.3 节）。
-- `IMPLEMENTED: PR#M` — 实现任务在任务 issue 上的交付声明。
+- `IMPLEMENTED: PR#M` — 实现任务在任务 issue 上的交付声明
+  （provenance 行如 `（impl: 直评）`）。
 - `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>` —
-  integrator 在 PR 上的落地记录；同时关闭对应任务 issue。
+  integrator 在 PR 上的落地记录（provenance 行如
+  `（intg: 直评, 委派: 人）`）；同时关闭对应任务 issue。
 
-**委派记录**：review / design 的委派（orchestrator 或人发起）在
-任务 issue 或 PR 线程留一条先于结论标记的评论（如 `rev: review
-PR#N`）。
+**委派记录**：任何角色的委派（orchestrator 或人发起）在任务 issue
+或 PR 线程留一条先于结论标记的评论（如 `rev: review PR#N`、
+`intg: merge PR#N`、`impl: implement #N`）。
 
 **推导规则**：状态重建（增量基线、是否已落地）只取带 provenance
 且能对上委派记录的最新标记；无有效标记视为全量审。
