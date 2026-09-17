@@ -4,7 +4,9 @@
 >
 > Date: 2026-09-17
 >
-> Relation: narrow revision to the current BCR Working Design Candidate. This delta simplifies continuation semantics; it does not itself promote BCR to Authority.
+> Relation: narrow revision to `futouyiba/noos-shuttle` `docs/deliberation-harness/bounded-continuation-run-v0-working-candidate.md` @ `1f03a8072dbf6e89724547265e59207955fda266`. This delta simplifies continuation semantics; it does not itself promote BCR to Authority.
+>
+> Human decision provenance: PR #17 comment `5716914285` — https://github.com/futouyiba/noos_docs/pull/17#issuecomment-5716914285. That comment is a durable GitHub transcription of the Human operator's 2026-09-17 ChatGPT Primary Design instruction; it is not a new review verdict.
 
 ## 1. Product semantic
 
@@ -133,7 +135,7 @@ A continuation in `PREPARED`, `DISPATCHING`, `UNCERTAIN`, or `FAILED_SAFE` does 
 
 ## 6. Lightweight re-anchor semantics
 
-Canonical intent:
+Required semantic skeleton:
 
 ```text
 go
@@ -144,7 +146,14 @@ go
 [/NOOS Re-anchor]
 ```
 
-Exact wording may adapt to the Provider/conversation, but the semantic payload remains narrow.
+Provider-specific wording may vary only if it preserves both required clauses:
+
+```text
+A. continue the current mainline; do not branch into optional scope
+B. stop on completion or a Human / Review / Evidence boundary
+```
+
+The exact rendered re-anchor payload MUST be recorded verbatim in SubmissionOperation provenance so later review can distinguish the canonical intent from an adapter-specific rendering.
 
 The re-anchor only:
 
@@ -164,7 +173,7 @@ choose between design alternatives
 prioritize optional work
 ```
 
-## 7. Evaluator philosophy: default continue, detect stop boundaries
+## 7. Stop-boundary detector: default continue, do not plan
 
 V0 changes emphasis from:
 
@@ -180,7 +189,7 @@ continue by default unless a stop boundary is detected
 
 This is a shift from positive planning authorization toward negative stop-boundary detection.
 
-The evaluator's primary question is:
+The detector's primary question is:
 
 ```text
 Is there a clear reason not to send another "go"?
@@ -194,7 +203,9 @@ What exactly should the Assistant do next?
 
 An explicit `next_action_hint` is not required for normal continuation eligibility. Lack of a formal next-step sentence is not, by itself, a stop condition.
 
-The evaluator remains a classifier/detector, not a Planner or semantic authority source.
+The stop-boundary detector is a Harness semantic classifier operating on the completed stable Assistant turn plus current guardrail references when they exist. It is not a workflow role, Planner, or semantic authority source. Runtime-mechanical boundaries are taken from canonical runtime/operation facts, not inferred by the semantic classifier.
+
+If a semantic boundary cannot be classified with sufficient confidence, the detector returns `SEMANTIC_CONTINUITY_UNCERTAIN`; automation fails closed and no next `go` is created.
 
 ## 8. Minimal continuation policy
 
@@ -210,9 +221,13 @@ AND runtime permits another SubmissionOperation
 AND previous continuation outcome is sufficiently reconciled
 AND no Human intervention occurred
 AND no stop boundary is detected
+AND, if this Run starts on a post-rollover Provider Conversation,
+    RESUME_ELIGIBLE is currently true at Run creation
 ```
 
-The semantic evaluator does not need to prove that:
+The final predicate is a creation-time gate for a new post-rollover Run. `RESUME_ELIGIBLE` remains only a derived Continuity projection; it does not itself authorize `go`. The Human `Go ×N` action is the new continuation authorization.
+
+The semantic detector does not need to prove that:
 
 ```text
 a formal Goal object exists
@@ -221,35 +236,69 @@ one exact Closure successor exists
 Harness knows how to solve the current problem
 ```
 
-## 9. Stop boundaries
+## 9. Stop boundaries and disposition
 
-At least the following stop conditions remain:
+### 9.1 Mechanical boundaries
+
+These are determined from canonical runtime / operation / binding facts:
+
+```text
+SUBMISSION_UNCERTAIN
+RUNTIME_UNSAFE
+CONVERSATION_REBASE_REQUIRED
+BUDGET_EXHAUSTED
+USER_INTERVENTION
+```
+
+Required disposition:
+
+```text
+SUBMISSION_UNCERTAIN      → HOLD current Run; reconcile; no next go
+RUNTIME_UNSAFE            → HOLD current Run; same-conversation recovery may resume it
+CONVERSATION_REBASE_REQUIRED
+                          → END current Run; invoke Continuity boundary
+BUDGET_EXHAUSTED          → END current Run
+USER_INTERVENTION         → END/CANCEL current Run; remaining budget does not auto-resume
+```
+
+### 9.2 Semantic boundaries
+
+The bounded semantic detector may emit:
 
 ```text
 MAINLINE_COMPLETE
-
 NEEDS_HUMAN
 NEEDS_REVIEW
 NEEDS_EVIDENCE
 NEEDS_EXTERNAL
-
 OPTIONAL_SCOPE_EXPANSION
 CLEAR_SCOPE_DRIFT
-
 STALLED_OR_REPEATING
 SEMANTIC_CONTINUITY_UNCERTAIN
-
-USER_INTERVENTION
-
-SUBMISSION_UNCERTAIN
-RUNTIME_UNSAFE
-
-CONVERSATION_REBASE_REQUIRED
-
-BUDGET_EXHAUSTED
 ```
 
-Uncertainty may conservatively stop a Run. The design does not need to maximize continuation recall by guessing.
+Minimum executable interpretation:
+
+- `MAINLINE_COMPLETE`: the stable Assistant turn explicitly states the current requested mainline is complete, or completion is directly entailed by an already-defined completion criterion. Otherwise do not infer completion merely because the answer sounds conclusive.
+- `NEEDS_HUMAN / NEEDS_REVIEW / NEEDS_EVIDENCE / NEEDS_EXTERNAL`: the stable Assistant turn explicitly identifies that dependency, or an existing durable gate requires it.
+- `OPTIONAL_SCOPE_EXPANSION`: the Assistant proposes a separable optional branch that is not required to continue the current question.
+- `CLEAR_SCOPE_DRIFT`: for managed threads, the Assistant proposes/starts work outside durable Scope; for ordinary chats, it abandons the currently advancing question for a distinct new topic. If that distinction is not clear, emit `SEMANTIC_CONTINUITY_UNCERTAIN` instead.
+- `STALLED_OR_REPEATING`: after at least two consecutive accepted automated continuations, the stable Assistant turns substantially repeat the same unresolved content without adding a new decision, evidence item, discriminator, or narrowed uncertainty. This is a conservative dogfood heuristic, not semantic truth.
+- `SEMANTIC_CONTINUITY_UNCERTAIN`: the detector cannot confidently distinguish safe mainline continuation from drift/completion/dependency.
+
+Required disposition:
+
+```text
+MAINLINE_COMPLETE          → END current Run
+OPTIONAL_SCOPE_EXPANSION   → END current Run; Human decides whether to authorize new scope
+CLEAR_SCOPE_DRIFT          → END current Run; Human
+NEEDS_*                    → HOLD/STOP automation; Human/review/evidence boundary
+STALLED_OR_REPEATING       → HOLD/STOP automation; Human or explicit re-anchor decision
+SEMANTIC_CONTINUITY_UNCERTAIN
+                           → HOLD/STOP automation; Human
+```
+
+A semantic detector error must never create a new authority fact. False-positive stopping costs automation recall; false-negative continuation is bounded by budget, guardrails, every-four-turn re-anchor, and the next evaluation. Any `UNCERTAIN` case fails closed.
 
 ## 10. Assistant-declared next step
 
@@ -309,17 +358,40 @@ Conversation rollover remains a hard boundary for the current Run:
 
 ```text
 BCR on C1
-→ conversation rollover boundary
-→ current ContinuationRun ends
-→ Continuity workflow
+→ CONVERSATION_REBASE_REQUIRED
+→ current ContinuationRun ENDS
+→ Continuity CONTINUITY_BOUNDARY
+→ rollover workflow
 → C2
-→ RESUME_ELIGIBLE
+→ Resume Verification
+→ derived RESUME_ELIGIBLE
 → STOP
 ```
 
-If the Human then chooses `Go ×N` on C2, that is a new bounded continuation authorization and a new Run.
+Terminology mapping for this seam:
 
-At that point NOOS must still **not** ask for Goal again. The Continuity Checkpoint + BOOTSTRAP + Resume Verification path has already restored the current working position.
+```text
+BCR CONVERSATION_REBASE_REQUIRED
+→ invokes Continuity CONTINUITY_BOUNDARY
+
+Continuity CHECKPOINT_STALE / DESTINATION_CHANGED
+→ rollover preparation remains blocked after the BCR Run has already ended
+```
+
+A new `Go ×N` on C2 is allowed only when:
+
+```text
+RESUME_ELIGIBLE == true
+AND Human chooses Go ×N
+```
+
+Then the Human action creates a new bounded continuation authorization and a new Run.
+
+If `RESUME_ELIGIBLE != true`, `Go ×N` must not create a Run. The system remains held on C2 and must resolve the Continuity failure/Human boundary first.
+
+Even after successful resume, NOOS must **not** ask for Goal again. The successful Continuity Checkpoint + BOOTSTRAP + Resume Verification path supplies the recovered working position; the Human's `Go ×N` action supplies the new continuation authorization.
+
+`RESUME_ELIGIBLE` itself remains non-authoritative and cannot dispatch a `go` without that new authorization and normal dispatch gates.
 
 ## 15. No cross-rollover budget carry
 
@@ -327,6 +399,7 @@ Old Run budget does not survive a binding change as actuation authority.
 
 ```text
 old Run ENDED
+→ Continuity reaches RESUME_ELIGIBLE
 → Human chooses new Go ×N
 → new authorization
 → new Run
@@ -345,7 +418,9 @@ Recommended UI:
 [ Go ×20 ]
 ```
 
-Selecting `Go ×N` should start directly.
+For a normal same-conversation start, selecting `Go ×N` should start directly.
+
+For a post-rollover conversation, the controls may become actionable only when `RESUME_ELIGIBLE == true`; this is an eligibility gate, not a request to re-enter Goal.
 
 Do not show a setup dialog asking:
 
@@ -365,13 +440,17 @@ At minimum verify:
 2. Assistant states an obvious next step → Harness sends literal `go`; no NextAction object required.
 3. Assistant does not explicitly state next step but no stop boundary exists → continuation still eligible.
 4. Accepted continuation #1/#2/#3 → literal `go`.
-5. Accepted continuation #4 → `go` + lightweight mainline re-anchor.
+5. Accepted continuation #4 → `go` + lightweight mainline re-anchor; exact rendered payload is retained in provenance.
 6. Failed/uncertain send does not incorrectly advance the four-turn accepted-continuation counter.
 7. Re-anchor does not introduce a new task or optional scope.
-8. Assistant requests Human decision → Run stops before next `go`.
-9. Assistant declares current mainline complete → Run stops.
-10. CurrentConversationBinding changes → Run ends; no next `go`.
-11. After successful rollover and `RESUME_ELIGIBLE`, a new Human `Go ×N` starts without another Goal prompt.
+8. Assistant requests Human decision → automation stops before next `go`.
+9. Assistant explicitly declares current mainline complete → current Run ends.
+10. Same-conversation runtime failure → Run holds while recovery occurs; no blind next `go`.
+11. CurrentConversationBinding changes / `CONVERSATION_REBASE_REQUIRED` → Run ends; no next `go`.
+12. After successful rollover and `RESUME_ELIGIBLE`, a new Human `Go ×N` starts without another Goal prompt.
+13. After rollover with BOOTSTRAP failure, Hard Resume failure, Soft `MISMATCH`, or Soft `UNCERTAIN`, `Go ×N` cannot create a new Run.
+14. `CLEAR_SCOPE_DRIFT` ambiguity becomes `SEMANTIC_CONTINUITY_UNCERTAIN`, not an invented confident classification.
+15. Two substantially repeating accepted turns may trigger the conservative `STALLED_OR_REPEATING` hold; one repetitive turn alone does not.
 
 ## 18. Resulting V0 definition
 
@@ -401,4 +480,4 @@ It is not:
 READY_FOR_BOUNDED_VERTICAL_DOGFOOD
 ```
 
-subject to the normal NOOS integration and independent review flow.
+This is an owner-directed Candidate delta, not an Authority promotion. Repository integration still requires the normal independent review / merge workflow.
