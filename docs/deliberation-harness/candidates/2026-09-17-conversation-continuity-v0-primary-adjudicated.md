@@ -7,10 +7,24 @@
 > Implementation direction: `READY_FOR_BOUNDED_VERTICAL_DOGFOOD`
 >
 > This document records the Primary-adjudicated V0 design candidate for Conversation Continuity. It does **not** itself acquire Authority and does not modify existing Binding, Submission, BCR, Goal, Scope, Current, or governance contracts.
+>
+> Primary adjudication provenance: PR #17 comment `5716914285` — https://github.com/futouyiba/noos_docs/pull/17#issuecomment-5716914285. That comment is the durable GitHub transcription of the exact Human-delivered adjudication from the 2026-09-17 ChatGPT Primary Design conversation. The source chat was not itself a GitHub-addressable artifact; the comment records that provenance explicitly rather than pretending the adjudication originated on GitHub.
 
 ## 1. Primary adjudication
 
+Delivery source:
+
 ```text
+Who: Human operator / Primary Design authority for this task
+Where originally delivered: ChatGPT Primary Design conversation, 2026-09-17
+Durable GitHub transcription: PR #17 comment 5716914285
+```
+
+Exact decisive text:
+
+```text
+PRIMARY_ADJUDICATION
+
 PD-1:
 ACCEPT OPTION A
 Support Human-assisted rollover in V0.
@@ -26,9 +40,10 @@ Required narrow revisions:
 
 IMPLEMENTATION DIRECTION:
 READY_FOR_BOUNDED_VERTICAL_DOGFOOD
+after narrow revision.
 ```
 
-This revision incorporates all four required narrow changes.
+This document incorporates all four required narrow changes. The durable transcription above is provenance for the Human adjudication; it is not an independent review approval and does not promote this Candidate into Authority.
 
 ## 2. Executive summary
 
@@ -104,7 +119,7 @@ Browser Carrier degradation does not itself justify Provider Conversation replac
 
 ### 3.5 ChatGPT establishment is not proven safe for full automation
 
-Current evidence does not establish conforming `IDENTITY_FIRST` or technically guaranteed `TRANSPORT_ONLY_ESTABLISHMENT` for ordinary ChatGPT new-conversation creation. Prompt discipline is insufficient. Therefore V0 uses the accepted Human-assisted adoption fallback.
+Current evidence does not establish conforming `IDENTITY_FIRST` or technically guaranteed `TRANSPORT_ONLY_ESTABLISHMENT` for ordinary ChatGPT new-conversation creation. Prompt discipline is insufficient. Therefore V0 uses the adjudicated Human-assisted adoption fallback.
 
 ## 4. Failure domains, not a health score
 
@@ -236,6 +251,17 @@ Authoritative-reference projection in checkpoint
 advisory Working Position Digest
 ```
 
+Layer B is never its own ground truth. Every Layer-B claim that is correctness-relevant to resume SHOULD carry a basis reference to one or more of:
+
+```text
+current Authority / Current artifact
+accepted Human / Review decision artifact
+retrievable visible source turn
+other durable evidence artifact
+```
+
+A digest claim that cannot be supported by such evidence remains advisory only. It MUST NOT be promoted by the verifier into an asserted recovered fact merely because the digest and ResumeReceipt agree with each other.
+
 ## 7. Source fence
 
 Checkpoint creation freezes the observed tail of C1. Where practical, reuse existing submission/conversation baseline evidence rather than creating a second head-tracking subsystem.
@@ -365,7 +391,19 @@ MISMATCH
 UNCERTAIN
 ```
 
-It may not rewrite Goal/Scope/Current, generate a new plan, resolve disputed design questions, or invent missing decisions.
+Ground truth for Soft Verification is **not the Working Position Digest itself**. The verifier compares the BOOTSTRAP/ResumeReceipt restatement against the digest **and the digest's cited supporting evidence**: current Authority/Current artifacts, accepted Human/Review decision artifacts, retrievable visible source turns, and other durable evidence refs.
+
+Required rule:
+
+```text
+required working-position claim
++ no retrievable supporting basis
+→ UNCERTAIN
+```
+
+Agreement between two ungrounded summaries is not evidence of restored semantic continuity. Unsupported Layer-B material remains advisory and cannot, by itself, support `NO_MISMATCH_DETECTED` for a required claim.
+
+The verifier may not rewrite Goal/Scope/Current, generate a new plan, resolve disputed design questions, invent missing decisions, or silently repair an unsupported digest.
 
 ## 14. RESUME_ELIGIBLE
 
@@ -475,14 +513,35 @@ Current BCR direction remains that a ContinuationRun pins Provider Conversation 
 
 ```text
 BCR ACTIVE on C1
-→ conversation rebase/continuity boundary
+→ BCR emits CONVERSATION_REBASE_REQUIRED
 → current Run ENDED
+→ Continuity enters CONTINUITY_BOUNDARY
 → rollover workflow
-→ RESUME_ELIGIBLE
+→ Resume Verification
+→ derived RESUME_ELIGIBLE
 → STOP
 ```
 
-A later `Go` or `Go×N` constitutes new continuation authorization.
+Terminology mapping:
+
+```text
+BCR CONVERSATION_REBASE_REQUIRED
+→ Continuity CONTINUITY_BOUNDARY
+
+Continuity CHECKPOINT_STALE / DESTINATION_CHANGED
+→ rollover remains blocked after the old BCR Run has already ended
+```
+
+A later `Go` or `Go×N` after rollover is eligible to create a new Run only when:
+
+```text
+RESUME_ELIGIBLE == true
+AND Human provides new Go / Go×N authorization
+```
+
+If bootstrap or Resume Verification fails, C2 may remain canonical current but `RESUME_ELIGIBLE` is false; no new BCR Run may be created on that basis. This is a mechanical Continuity gate, not a semantic evaluator guess.
+
+`RESUME_ELIGIBLE` still grants no continuation authority by itself; the Human action is the new authorization and normal binding/lease/dispatch gates still apply.
 
 ## 18. Automation boundary
 
@@ -494,7 +553,7 @@ Refresh remains conditional on refresh-safety evidence.
 
 Current ChatGPT conversation creation/adoption remains Human-assisted.
 
-Semantic mismatch, Authority changes, ambiguous submission outcomes, or old/new conversation divergence remain fail-closed Human boundaries.
+Semantic mismatch, unsupported required Working Position claims, Authority changes, ambiguous submission outcomes, or old/new conversation divergence remain fail-closed Human boundaries.
 
 ## 19. Key invariants
 
@@ -515,14 +574,16 @@ Semantic mismatch, Authority changes, ambiguous submission outcomes, or old/new 
 15. ResumeReceipt is BOOTSTRAP evidence/result.
 16. ResumeReceipt does not acquire semantic Authority.
 17. Resume Verification detects mismatch; it does not create correct semantic state.
-18. RESUME_ELIGIBLE is a derived projection.
-19. RESUME_ELIGIBLE grants no independent actuation authority.
-20. BOOTSTRAP success != automatic continuation.
-21. Successful binding switch is not silently rolled back if later bootstrap/verification fails.
-22. Superseded conversations cannot regain authority from stale callbacks.
-23. Full transcript is not injected by default.
-24. Private chain-of-thought is not continuity transport material.
-25. BCR Run does not cross Provider Conversation rollover in V0.
+18. Unsupported required Layer-B claims force `UNCERTAIN`; summary agreement cannot self-authorize continuity.
+19. RESUME_ELIGIBLE is a derived projection.
+20. RESUME_ELIGIBLE grants no independent actuation authority.
+21. BOOTSTRAP success != automatic continuation.
+22. Successful binding switch is not silently rolled back if later bootstrap/verification fails.
+23. Superseded conversations cannot regain authority from stale callbacks.
+24. Full transcript is not injected by default.
+25. Private chain-of-thought is not continuity transport material.
+26. BCR Run does not cross Provider Conversation rollover in V0.
+27. A post-rollover BCR Run cannot be created until `RESUME_ELIGIBLE == true` and a new Human continuation authorization exists.
 
 ## 20. Primary decisions
 
@@ -530,7 +591,7 @@ Semantic mismatch, Authority changes, ambiguous submission outcomes, or old/new 
 OPEN_PRIMARY_DECISIONS: NONE
 ```
 
-PD-1 is adjudicated:
+PD-1 is adjudicated by the Human decision recorded at PR #17 comment `5716914285`:
 
 ```text
 ACCEPT OPTION A
@@ -549,13 +610,15 @@ Verify at least:
 4. C2 changes after Human adoption → `DESTINATION_CHANGED`.
 5. Human adoption is recorded as acceptance of observed pre-adoption history without NOOS-safe-establishment claim.
 6. Wrong Current / Goal / Scope reference → Hard Resume Verification failure.
-7. Omitted key semantic constraint → Soft `MISMATCH` or `UNCERTAIN`.
+7. Omitted or unsupported required semantic constraint → Soft `MISMATCH` or `UNCERTAIN`, never self-confirmation from the digest alone.
 8. Crash after binding commit → C2 remains canonical current.
 9. BOOTSTRAP `UNCERTAIN` → reconcile, no blind resend.
 10. Late C1 callback → no authority mutation.
 11. Duplicate C1/C2 browser carriers → only canonical binding + lease + dispatch claim may actuate.
 12. `RESUME_ELIGIBLE` recomputes false when an underlying eligibility fact becomes false.
 13. `RESUME_ELIGIBLE` alone cannot dispatch a GO.
+14. After rollover with BOOTSTRAP failure or Resume Verification not passing, a new `Go ×N` cannot create a BCR Run.
+15. After successful rollover + current `RESUME_ELIGIBLE`, Human `Go ×N` may create a new Run without Goal re-entry.
 
 ## 22. Recommended implementation slice
 
@@ -564,7 +627,7 @@ Implement only:
 ```text
 ContinuityCheckpoint canonical schema
 Authority-reference shell projection
-advisory Working Position Digest
+advisory Working Position Digest with basis refs for required claims
 content fingerprint
 C1 source fence
 Human-assisted C2 establishment/adoption record
@@ -575,8 +638,9 @@ existing generation-scoped lease assignment
 BOOTSTRAP SubmissionOperation
 ResumeReceipt as BOOTSTRAP result evidence
 Hard Resume Verification
-Soft semantic mismatch detector
+Soft semantic mismatch detector against cited supporting evidence
 derived RESUME_ELIGIBLE projection
+post-rollover BCR creation gate on RESUME_ELIGIBLE + new Human authorization
 STOP — no automatic continuation
 ```
 
@@ -596,14 +660,20 @@ Goal/Scope mutation
 automatic GO after Resume Verification
 ```
 
-## 23. Disposition
+## 23. Repository/lifecycle boundary
+
+The current file location under `docs/deliberation-harness/candidates/` is only the placement used by PR #17. This Candidate does not define a repository-wide candidate directory convention, promotion lifecycle, or Harness governance authority.
+
+Repository integration remains subject to the canonical repo review/merge workflow. Harness-level promotion/closure is outside this Candidate and outside the scope of `docs/agent-workflow.md` unless separately defined by an appropriate authority.
+
+## 24. Disposition
 
 ```text
-PRIMARY ADJUDICATION INCORPORATED
+PRIMARY ADJUDICATION PROVENANCE RECORDED @ PR#17 comment 5716914285
 CORE CANDIDATE: ACCEPTED WITH REQUIRED NARROW REVISION
 PD-1: OPTION A ACCEPTED
 OPEN PRIMARY DECISIONS: NONE
-NEXT: READY_FOR_BOUNDED_VERTICAL_DOGFOOD
+NEXT: READY_FOR_BOUNDED_VERTICAL_DOGFOOD AFTER REVIEW/INTEGRATION GATES
 ```
 
-This document remains a Candidate until integrated/promoted through the normal NOOS governance path.
+This document remains a non-Authority Candidate. Its repository integration requires independent review of the exact revised head and the normal merge gate.
