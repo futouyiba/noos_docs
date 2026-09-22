@@ -239,7 +239,7 @@ head SHA"模式（如包含 `review` 链接与 7–40 位十六进制 SHA），
 | 暗号 | 接收角色 | 固定展开 |
 | --- | --- | --- |
 | `dispatch <ref 或一句话>` | orchestrator | 无任务 issue 时先把一句话写成任务 issue（目标、验收、provenance）；拆分切片；向实现任务投递 `implement #N`（本机直连优先，否则评论到 issue 由人转达）。follow-up 同此路径，包括把已合并 PR 上的 DESIGN findings 立为新任务。 |
-| `implement #N`（缩写 `impl`） | 实现任务 | 读任务 issue 全部评论（含裁定引用）；独立 branch / worktree 实现；最小充分验证跑绿后提交；需裁定的先走第 2 节（proposal + `design` 触发）；建 draft PR（body 可暂空）→ 委派独立 review（`review PR#M`，委派记录见 B.3）→ APPROVE 后补 PR body：review 证据链接 + exact head（第 1.3 节）并转 Ready。仅当 PR body 明确链接任务 issue（优先 `Closes #N`）且 issue 时间线可反查该 PR 时，才可省略 `IMPLEMENTED`；否则 issue 回帖精简的 `IMPLEMENTED: PR#M @ <head>`，不复制 PR body。 |
+| `implement #N`（缩写 `impl`） | 实现任务 | 读任务 issue 全部评论（含裁定引用）；独立 branch / worktree 实现；最小充分验证跑绿后提交；需裁定的先走第 2 节（proposal + `design` 触发）；建 draft PR（body 可暂空）→ 委派独立 review（`review PR#M`，委派记录见 B.3）→ APPROVE 后补 PR body：review 证据链接 + exact head（第 1.3 节）并转 Ready。仅当 PR body 用普通链接明确关联任务 issue（不得用自动关闭关键词）且 issue 时间线可反查该 PR 时，才可省略 `IMPLEMENTED`；否则 issue 回帖精简的 `IMPLEMENTED: PR#M @ <head>`，不复制 PR body。 |
 | `review PR#N` | reviewer | 线程无有效 `REVIEW:` 标记时为全量审，否则取最新有效标记的 head 与当前 head 比对：相同为重看，不同为增量复审（第 1.3 节）；按第 1.4 节分级；亲跑关键命令引用实际输出、核心不变量做变异验证（第 1.2 节）；结论评论到 PR，首行 `REVIEW: <verdict> @ <head-sha>`、次行 provenance（B.3），findings 各带 severity 与证据；不改代码，异议走第 2.5 节。 |
 | `design <ref>` | epic designer | ref 为 PR 或携带 proposal 的 issue；读 diff 与 proposal / 契约文件；结论评论到 PR，首行 `DESIGN: <verdict>`（决定性表述原文引用，第 2.3 节）、次行 provenance，并按 B.3 记录来源文件路径、Git blob SHA 与裁定射程；对 reviewer 技术异议的重裁（第 2.5 节）同此。最终 PR 完整文件等价时按第 2.1 节与 B.3 机械承接，不重复 DESIGN。已合并 PR 上的 findings 不要求原 PR 改动，由 orchestrator 以新 `dispatch` 接续。 |
 | `merge PR#N`（接受 `integrate`） | integrator | 核对 PR body 的 review 证据链接与 exact head（＝合并时 PR 当前 head，见 B.3），逐项验证所链标记评论的 provenance 与委派记录（第 4.2 节、B.3）→ review intake 留档 → 合并 → 按第 4.2 节做风险相称的集成验证及适用构建／部署 → PR 回帖 `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>`，必要时同帖 `accepts #N` → 复查任务 issue 验收后关闭或保留 → 成功只通知 orchestrator；仅在需要修复、重审或后续动作时通知实现任务／reviewer。有效持续授权下，watcher 可直接用 PR 指针唤醒 integrator，无需 orchestrator 为每个 PR 重述授权与证据。 |
@@ -297,8 +297,9 @@ reviewer subagent 形态）；无 provenance 行的标记为无效标记，不�
 - `IMPLEMENTED: PR#M @ <head-sha>` — 可选的精简交付指针；用于 watcher
   或任务关系无法从 PR body／issue 时间线双向推导时，不复制验证、
   裁定或 review 正文（provenance 行如 `（impl: 直评）`）。只有 PR
-  body 明确链接任务 issue（优先 `Closes #N`）且 issue 时间线可反查
-  该 PR 时，才可省略本标记。
+  body 用普通链接明确关联任务 issue 且 issue 时间线可反查该 PR 时，
+  才可省略本标记。PR body 不得使用 `Closes`／`Fixes`／`Resolves` 等
+  自动关闭关键词；issue 只在集成验证与验收完成后按第 4.2 节关闭。
 - `INTEGRATED: <验证摘要 + 构建时间戳> @ <merge-sha>` —
   integrator 在 PR 上的落地记录（provenance 行如
   `（intg: 直评, 委派: 人）`）。单一 PR 完整满足单一 issue 时，可在

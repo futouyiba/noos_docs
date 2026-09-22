@@ -24,8 +24,9 @@
 3. DESIGN 记录来源文件路径、Git blob 与裁定射程。等价捷径只接受完整
    文件 blob 相同且射程不变，并记录 source／target；其它情况重新裁定。
 4. PR body 是交付清单；`IMPLEMENTED` 仅在 watcher 或关系不易推导时
-   作为可选的 `PR + head` 指针。仅当 PR body 明确链接任务 issue 且
-   issue 时间线能反查 PR 时，才可省略。
+   作为可选的 `PR + head` 指针。仅当 PR body 用普通链接关联任务 issue
+   且 issue 时间线能反查 PR 时，才可省略；禁止用自动关闭关键词提前
+   绕过集成后验收。
 5. Integrator 证明审核对象等于合并对象、主分支正确及适用集成检查
    通过；同树情况下不默认重跑 reviewer 的语义审核与变异探针。
 6. 成功只通知 orchestrator；需要修复、重审或 follow-up 时才回流
