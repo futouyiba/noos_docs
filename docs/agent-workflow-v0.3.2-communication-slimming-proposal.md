@@ -21,10 +21,11 @@
    后续对象只需指针式唤醒，越界、撤销或找不到授权时才升级人类。
    任务线可以保存授权来源指针供接管恢复，但必须能回读原授权记录。
 2. 每项事实只有一个持久维护处；委派和直连消息不复制证据包。
-3. DESIGN 绑定 proposal blob／commit／patch。最终设计内容逐字节相同
-   时由 reviewer 或 integrator 记录等价性，不重复请 designer 裁定。
+3. DESIGN 记录来源文件路径、Git blob 与裁定射程。等价捷径只接受完整
+   文件 blob 相同且射程不变，并记录 source／target；其它情况重新裁定。
 4. PR body 是交付清单；`IMPLEMENTED` 仅在 watcher 或关系不易推导时
-   作为可选的 `PR + head` 指针。
+   作为可选的 `PR + head` 指针。仅当 PR body 明确链接任务 issue 且
+   issue 时间线能反查 PR 时，才可省略。
 5. Integrator 证明审核对象等于合并对象、主分支正确及适用集成检查
    通过；同树情况下不默认重跑 reviewer 的语义审核与变异探针。
 6. 成功只通知 orchestrator；需要修复、重审或 follow-up 时才回流
