@@ -26,8 +26,8 @@ harness 生命周期的 promotion、closure 和 governor 权限另行治理。
    运行测试、检查构建结果或做退化验证。
 4. PR body 持久记录任务 issue、review 证据链接和被审 exact head。
    不使用自动关闭 issue 的关键词；issue 在集成验证和验收后关闭。
-5. 生效中的 `REQUEST_CHANGES`、CI 失败或 blocking disposition 未解决
-   时不得合并。
+5. 生效中的 `REQUEST_CHANGES`、blocking disposition 未解决，或仓库要求
+   的 CI／status checks 尚未全部成功（失败、缺失、pending）时不得合并。
 
 ## 2. 设计裁定
 
@@ -98,7 +98,8 @@ PR 和可核验的授权来源恢复工作。
 
 ### 5.5 Integrator
 
-1. 核对授权、review 证据、PR body exact head、PR 当前 head、CI 和阻塞项。
+1. 核对授权、review 证据、PR body exact head、PR 当前 head、required
+   checks 和阻塞项。
 2. 合并并确认实际 merge 结果与默认分支状态。
 3. 运行仓库明确要求的集成检查；其它检查按实际合并差异和风险决定，
    不机械重跑 reviewer 已完成且合并树未改变的检查。
