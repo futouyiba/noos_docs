@@ -1,8 +1,8 @@
 # NOOS 多对话 Agent 工作流规范
 
 > 多平台、多 harness 协作开发仓库时的最小约束。
-> v0.3.3（2026-09-22）：只保留角色边界、合并门禁和恢复所需事实；
-> 删除可由模型按上下文判断的分支、重复步骤与传输细节。
+> v0.3.4（2026-09-22）：门禁继续收敛为协议自身可核验的条件；工程验证
+> 由仓库与执行角色按任务判断。
 
 ## 0. 范围与角色
 
@@ -26,8 +26,7 @@ harness 生命周期的 promotion、closure 和 governor 权限另行治理。
    运行测试、检查构建结果或做退化验证。
 4. PR body 持久记录任务 issue、review 证据链接和被审 exact head。
    不使用自动关闭 issue 的关键词；issue 在集成验证和验收后关闭。
-5. 生效中的 `REQUEST_CHANGES`、blocking disposition 未解决，或仓库要求
-   的 CI／status checks 尚未全部成功（失败、缺失、pending）时不得合并。
+5. 生效中的 `REQUEST_CHANGES` 或 blocking disposition 未解决时不得合并。
 
 ## 2. 设计裁定
 
@@ -70,7 +69,7 @@ PR 和可核验的授权来源恢复工作。
    风险和有效期授予持续授权；未撤销且未越界时，不逐对象重复询问。
 3. 接收方必须能回读原授权或有权平台记录。只有转述、来源不可核验、授权
    被撤销或对象越界时才停下并询问人类。
-4. 授权不替代 review、exact-head、CI、blocking disposition 或验收。
+4. 授权不替代 review、exact-head、blocking disposition 或验收。
 
 ## 5. 角色流程
 
@@ -98,8 +97,7 @@ PR 和可核验的授权来源恢复工作。
 
 ### 5.5 Integrator
 
-1. 核对授权、review 证据、PR body exact head、PR 当前 head、required
-   checks 和阻塞项。
+1. 核对授权、review 证据、PR body exact head、PR 当前 head 和阻塞项。
 2. 合并并确认实际 merge 结果与默认分支状态。
 3. 运行仓库明确要求的集成检查；其它检查按实际合并差异和风险决定，
    不机械重跑 reviewer 已完成且合并树未改变的检查。
@@ -143,5 +141,4 @@ marker 是审计与唤醒协议，不是身份认证或授权机制。
 增加新的治理门禁。冲突时以本文件为准。
 
 规范变更本身走本规范的 branch、review 和 merge 流程。按需用 commit SHA
-或 tag 锚定版本。可用 CI 检查 PR body 是否包含 review 链接和 exact head，
-但协议不依赖特定平台实现。
+或 tag 锚定版本；协议不依赖特定平台实现。
